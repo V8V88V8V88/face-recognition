@@ -68,3 +68,4 @@ int main() {
     detectFaces(); // Call the function to detect faces in live video
     return 0;
 }
+
