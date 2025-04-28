@@ -137,9 +137,15 @@ python src/video1.py --input ./tests/test.mp4
 
 If you prefer using C++, you can compile and run the C++ source:
 
+**Note:** Ensure you have the OpenCV development libraries installed (e.g., `opencv-devel` on Fedora/CentOS, `libopencv-dev` on Debian/Ubuntu).
+
 ```bash
-g++ src/FaceDetection.cpp -o FaceDetectionLite -lopencv_core -lopencv_imgproc -lopencv_highgui -lopencv_objdetect
-./FaceDetectionLite ./data/faces/aman.jpg
+# Compile (assuming you are in the face-recognition directory)
+# Adjust the -I path if OpenCV headers are installed elsewhere
+g++ src/FaceDetection.cpp -o bin/FaceDetectionLite -I/usr/include/opencv4 -lopencv_core -lopencv_imgproc -lopencv_highgui -lopencv_objdetect -lopencv_dnn -lopencv_face -lopencv_videoio -lopencv_imgcodecs
+
+# Run (assuming you are in the face-recognition directory)
+./bin/FaceDetectionLite ./data/faces/aman.jpg
 ```
 
 ## Models
