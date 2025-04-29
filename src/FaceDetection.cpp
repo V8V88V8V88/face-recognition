@@ -18,7 +18,7 @@ const string MODEL_BINARY = "./models/res10_300x300_ssd_iter_140000.caffemodel";
 void recognizeFaces(const vector<Mat>& knownFaceImages, const vector<string>& knownFaceNames) {
     Net net = readNetFromCaffe(MODEL_CONFIG, MODEL_BINARY);
 
-    Ptr<LBPHFaceRecognizer> model = LBPHFaceRecognizer::create(1, 8, 8, 8, 123.0);
+    Ptr<LBPHFaceRecognizer> model = LBPHFaceRecognizer::create(1, 8, 8, 8, 90.0);
 
     unordered_map<string, int> labelMapping;
     vector<int> labels;
@@ -63,30 +63,35 @@ void recognizeFaces(const vector<Mat>& knownFaceImages, const vector<string>& kn
                 int x2 = static_cast<int>(dataPtr[i * 7 + 5] * frame.cols);
                 int y2 = static_cast<int>(dataPtr[i * 7 + 6] * frame.rows);
 
-                Rect faceRect(x1, y1, x2 - x1, y2 - y1);
+                y1 = std::max(0, y1);
+                x2 = std::min(frame.cols, x2);
+                y2 = std::min(frame.rows, y2);
 
-                Mat faceROI = frame(faceRect);
+                if (x2 > x1 && y2 > y1) {
+                    Rect faceRect(x1, y1, x2 - x1, y2 - y1);
+                    Mat faceROI = frame(faceRect);
 
-                cvtColor(faceROI, faceROI, COLOR_BGR2GRAY);
-                resize(faceROI, faceROI, Size(100, 100), 1.0, 1.0, INTER_CUBIC);
+                    cvtColor(faceROI, faceROI, COLOR_BGR2GRAY);
+                    resize(faceROI, faceROI, Size(100, 100), 1.0, 1.0, INTER_CUBIC);
 
-                int predictedLabel = -1;
-                double predictionConfidence = 0.0;
-                model->predict(faceROI, predictedLabel, predictionConfidence);
+                    int predictedLabel = -1;
+                    double predictionConfidence = 0.0;
+                    model->predict(faceROI, predictedLabel, predictionConfidence);
 
-                string personName = "Unknown";
-                if (predictionConfidence < 100.0) {
-                    for (const auto& entry : labelMapping) {
-                        if (entry.second == predictedLabel) {
-                            personName = entry.first;
-                            break;
+                    string personName = "Unknown";
+                    if (predictedLabel != -1 && predictionConfidence < 70.0) {
+                        for (const auto& entry : labelMapping) {
+                            if (entry.second == predictedLabel) {
+                                personName = entry.first;
+                                break;
+                            }
                         }
                     }
-                }
 
-                rectangle(frame, faceRect, Scalar(0, 255, 0), 2);
-                putText(frame, "Person: " + personName, Point(faceRect.x, faceRect.y - 10),
-                        FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 255), 1);
+                    rectangle(frame, faceRect, Scalar(0, 255, 0), 2);
+                    putText(frame, "Person: " + personName + " (" + std::to_string(predictionConfidence) + ")", Point(faceRect.x, faceRect.y - 10),
+                            FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 255), 1);
+                }
             }
         }
 
