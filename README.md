@@ -20,6 +20,7 @@ face-recognition/
 │   └── faces/              # Stores captured face images (.jpg for C++ app)
 ├── models/                 # Required model files for C++ app
 │   ├── haarcascade_frontalface_alt2.xml # Face detection model
+│   ├── haarcascade_eye.xml # Optional eye detection model
 │   ├── face_model.yml      # Trained LBPH recognition model (generated)
 │   └── label_mapping.txt   # Maps internal labels to names (generated)
 ├── src/                    # Source code
@@ -27,7 +28,7 @@ face-recognition/
 │   ├── FaceRecognizer.cpp  # C++ Face recognition class implementation
 │   ├── FaceRecognizer.hpp  # C++ Face recognition class header
 │   └── facedetection.py    # Standalone Python face detection script
-├── include/                # Include directory (if used for headers)
+├── setup.sh                # Setup script to download models and check dependencies
 ├── CMakeLists.txt          # CMake build configuration for C++ app
 └── README.md               # This file
 ```
@@ -45,7 +46,36 @@ face-recognition/
 - **OpenCV (Python):** `opencv-python` package
 - *(Other Python dependencies might be required - check the script's imports)*
 
-## Installation & Building (C++ GUI Application)
+## Quick Setup & Build
+
+The easiest way to set up the project is using the provided setup script:
+
+```bash
+# Clone the repository
+git clone <your-repository-url>
+cd face-recognition
+
+# Make setup script executable (if needed)
+chmod +x setup.sh
+
+# Run setup script
+./setup.sh
+```
+
+The setup script will:
+1. Download required face detection models
+2. Create necessary directories
+3. Check for required dependencies
+4. Set up the CMake build directory
+
+Once the setup is complete, you can build the application:
+
+```bash
+# Build the application (from project root)
+cd build && make
+```
+
+## Manual Installation & Building (If setup script fails)
 
 1.  **Clone the repository:**
     ```bash
@@ -65,59 +95,71 @@ face-recognition/
         ```
     *(Package names might vary slightly depending on your distribution version)*
 
-3.  **Create Build Directory:**
+3.  **Download Face Detection Models:**
+    ```bash
+    mkdir -p models
+    curl -L -o models/haarcascade_frontalface_alt2.xml https://raw.githubusercontent.com/opencv/opencv/master/data/haarcascades/haarcascade_frontalface_alt2.xml
+    ```
+
+4.  **Create Build Directory:**
     ```bash
     mkdir build
     cd build
     ```
 
-4.  **Run CMake:**
+5.  **Run CMake:**
     ```bash
     cmake ..
     ```
 
-5.  **Compile:**
+6.  **Compile:**
     ```bash
     make
     ```
     An executable named `FaceRecognitionGui` will be created in the `build/bin/` directory.
 
-## Running the C++ GUI Application
+## Running the Application
 
-1.  **Ensure Models Directory Exists:** The application expects the `models/` directory to exist in the project root. The `haarcascade_frontalface_alt2.xml` file must be present inside it. You can usually find this file within your OpenCV installation's data directory or download it from the [OpenCV GitHub repository](https://github.com/opencv/opencv/tree/master/data/haarcascades). Copy it to the `models/` directory.
-    ```bash
-    # Navigate to project root first if not already there
-    cd /path/to/face-recognition
-    mkdir -p models
-    # Example: Copying from a typical Fedora OpenCV install path
-    # Adjust the source path based on your system and OpenCV installation
-    cp /usr/share/opencv4/haarcascades/haarcascade_frontalface_alt2.xml models/
-    # Or download and place it there
-    ```
+```bash
+# From the build directory
+./bin/FaceRecognitionGui
+```
 
-2.  **Navigate to the build directory:**
-    ```bash
-    cd /path/to/face-recognition/build
-    ```
-
-3.  **Run the executable:**
-    ```bash
-    ./bin/FaceRecognitionGui
-    ```
-
-## Usage Guide (C++ GUI Application)
+## Usage Guide
 
 1.  **Capture:**
     *   Enter the name of the person in the "Enter Name" field.
     *   Click the "Capture" button repeatedly (10 times by default) while the person's face is clearly visible in the video feed.
+    *   The system will check for quality (lighting, face size) and capture only when conditions are good.
     *   Captured images are saved as grayscale JPGs in the `data/faces/` directory.
+    
 2.  **Train:**
     *   Once you have captured images for one or more people, click the "Train Model" button.
     *   This will process the images in `data/faces/` and create/update the `face_model.yml` and `label_mapping.txt` files in the `models/` directory.
+    *   Training includes histogram equalization and other image preprocessing for better recognition quality.
+    
 3.  **Detect:**
     *   After training, click "Start Detection".
-    *   The application will detect faces in the video feed and attempt to recognize them based on the trained model. Recognized faces will be shown with a green bounding box and name; unknown faces will have a red box.
+    *   The application will detect faces in the video feed and attempt to recognize them based on the trained model. 
+    *   Recognized faces will be shown with a green bounding box and name; unknown faces will have a red box.
+    *   The system uses an adaptive confidence threshold that adjusts based on the number of people in the database.
     *   Click "Stop Detection" to halt the recognition process.
+
+## Recognition Algorithm
+
+This application uses the Local Binary Patterns Histograms (LBPH) algorithm for face recognition, which provides:
+
+- Robustness to lighting variations
+- Good performance with small training sets (as few as 10 images per person)
+- Efficient recognition without requiring GPU acceleration
+- Adaptive confidence threshold to better handle unknown faces
+
+## Troubleshooting
+
+* **Camera Not Detected:** Ensure your webcam is properly connected and not being used by another application.
+* **Poor Recognition:** Try improving lighting conditions and capture images from different angles.
+* **Build Issues:** Run `./setup.sh` to check for missing dependencies.
+* **Model Download Errors:** Check internet connection or manually download models from the OpenCV GitHub repository.
 
 ## Using the Python Face Detection Script
 
