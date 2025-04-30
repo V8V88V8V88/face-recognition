@@ -72,14 +72,38 @@ FaceRecognitionWindow::FaceRecognitionWindow()
 {
     set_title("Face Recognition Training & Detection");
     set_default_size(800, 600);
+    
+    // Make sure the window is visible
+    set_visible(true);
+    set_modal(false);
+    set_resizable(true);
+    
+    // Add the main box to the window
     set_child(m_main_box);
-
     m_main_box.set_margin(10);
 
     // Video Display Area (using Gtk::Image)
     m_video_display.set_vexpand(true);
     m_video_display.set_hexpand(true);
+    m_video_display.set_size_request(640, 480); // Set minimum size
+    m_video_display.set_margin(10);
+    m_video_display.set_halign(Gtk::Align::FILL);
+    m_video_display.set_valign(Gtk::Align::FILL);
     m_main_box.append(m_video_display);
+
+    // Create an initial black frame to show the video area
+    cv::Mat black_frame(480, 640, CV_8UC3, cv::Scalar(0, 0, 0));
+    cv::cvtColor(black_frame, black_frame, cv::COLOR_BGR2RGB);
+    auto initial_pixbuf = Gdk::Pixbuf::create_from_data(
+        black_frame.data,
+        Gdk::Colorspace::RGB,
+        false,
+        8,
+        black_frame.cols,
+        black_frame.rows,
+        black_frame.step
+    );
+    m_video_display.set(initial_pixbuf);
 
     // Info Label
     m_info_label.set_margin_top(5);
@@ -111,7 +135,7 @@ FaceRecognitionWindow::FaceRecognitionWindow()
     } catch (const cv::Exception& ex) {
         std::cerr << "Error loading face detector model: " << ex.what() << std::endl;
         update_info_label("Error: Failed to load face detection model files from models/ directory!");
-        // Disable buttons if model loading fails?
+        return;
     }
 
     m_face_recognizer = cv::face::LBPHFaceRecognizer::create(1, 8, 8, 8, LBPH_THRESHOLD);
@@ -121,19 +145,60 @@ FaceRecognitionWindow::FaceRecognitionWindow()
         fs::create_directories(FACES_DATA_FOLDER);
     }
 
-    // Try to open camera
-    m_video_capture.open(0);
-    if (!m_video_capture.isOpened()) {
-        std::cerr << "Error: Couldn't open the camera." << std::endl;
-        update_info_label("Error: Cannot open webcam!");
-        // Disable relevant buttons?
-    } else {
-        // Start timer for video feed updates (e.g., 30 FPS -> ~33ms)
-        m_timer_connection = Glib::signal_timeout().connect(
-            sigc::mem_fun(*this, &FaceRecognitionWindow::on_timer_timeout), 33);
+    // Try to open camera with retries
+    int max_retries = 3;
+    int retry_count = 0;
+    bool camera_opened = false;
+
+    while (retry_count < max_retries && !camera_opened) {
+        std::cout << "Attempting to open camera (attempt " << (retry_count + 1) << " of " << max_retries << ")..." << std::endl;
+        
+        // Try to open camera with V4L2 backend
+        m_video_capture.open(0, cv::CAP_V4L2);
+        
+        if (m_video_capture.isOpened()) {
+            std::cout << "Camera opened successfully." << std::endl;
+            
+            // Set camera properties
+            m_video_capture.set(cv::CAP_PROP_FRAME_WIDTH, 640);
+            m_video_capture.set(cv::CAP_PROP_FRAME_HEIGHT, 480);
+            m_video_capture.set(cv::CAP_PROP_FPS, 30);
+            
+            // Test if we can actually read a frame
+            cv::Mat test_frame;
+            if (m_video_capture.read(test_frame) && !test_frame.empty()) {
+                std::cout << "Successfully read test frame. Frame size: " 
+                         << test_frame.cols << "x" << test_frame.rows << std::endl;
+                camera_opened = true;
+                break;
+            } else {
+                std::cerr << "Failed to read test frame from camera." << std::endl;
+                m_video_capture.release();
+            }
+        } else {
+            std::cerr << "Failed to open camera." << std::endl;
+        }
+        
+        retry_count++;
+        std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
+    if (!camera_opened) {
+        std::cerr << "Error: Couldn't open the camera after " << max_retries << " attempts." << std::endl;
+        update_info_label("Error: Cannot open webcam! Please check if it's connected and not in use by another application.");
+        return;
+    }
+
+    std::cout << "Camera initialization complete. Starting video feed..." << std::endl;
+
+    // Start timer for video feed updates (e.g., 30 FPS -> ~33ms)
+    m_timer_connection = Glib::signal_timeout().connect(
+        sigc::mem_fun(*this, &FaceRecognitionWindow::on_timer_timeout), 33);
+
     load_recognizer(); // Try to load existing trained data
+    
+    // Show the window
+    show();
 }
 
 FaceRecognitionWindow::~FaceRecognitionWindow() {}
@@ -316,24 +381,42 @@ void FaceRecognitionWindow::on_detect_button_clicked() {
 
 bool FaceRecognitionWindow::on_timer_timeout() {
     if (!m_video_capture.isOpened()) {
-        return false; // Stop timer if camera closed
-    }
-
-    cv::Mat frame;
-    if (!m_video_capture.read(frame) || frame.empty()) {
-        std::cerr << "Error reading frame from camera." << std::endl;
+        std::cerr << "Timer: Camera is not opened." << std::endl;
         return true; // Keep timer running
     }
 
-    update_frame(); // Call the main update logic
-    return true; // Keep timer running
+    try {
+        update_frame();
+        return true; // Keep the timer running
+    } catch (const std::exception& e) {
+        std::cerr << "Timer error: " << e.what() << std::endl;
+        return true; // Keep the timer running despite error
+    }
 }
 
 void FaceRecognitionWindow::update_frame() {
-    cv::Mat frame;
-    if (!m_video_capture.read(frame) || frame.empty()) return;
+    static int frame_count = 0;
+    frame_count++;
 
-    cv::Mat display_frame = frame.clone();
+    if (!m_video_capture.isOpened()) {
+        std::cerr << "Error: Camera is not opened." << std::endl;
+        return;
+    }
+
+    cv::Mat frame;
+    bool read_success = m_video_capture.read(frame);
+    if (!read_success || frame.empty()) {
+        std::cerr << "Error reading frame from camera. Read success: " << read_success 
+                  << ", Frame empty: " << frame.empty() << std::endl;
+        return;
+    }
+
+    if (frame_count % 30 == 0) { // Print every ~1 second at 30fps
+        std::cout << "Frame " << frame_count << " size: " << frame.cols << "x" << frame.rows << std::endl;
+    }
+
+    cv::Mat display_frame;
+    frame.copyTo(display_frame); // Make a deep copy
 
     // --- Detection Logic (Only if m_is_detecting is true) ---
     if (m_is_detecting) {
@@ -383,40 +466,87 @@ void FaceRecognitionWindow::update_frame() {
         }
     }
 
-    // Convert OpenCV Mat to GdkPixbuf for display
-    cv::cvtColor(display_frame, display_frame, cv::COLOR_BGR2RGB); // GTK expects RGB
-    auto pixbuf = Gdk::Pixbuf::create_from_data(display_frame.data, Gdk::Colorspace::RGB,
-                                                 false, 8, display_frame.cols, display_frame.rows, display_frame.step);
-    
-    // Scale pixbuf to fit the image widget while maintaining aspect ratio
-    int widget_width = m_video_display.get_width();
-    int widget_height = m_video_display.get_height();
-    
-    if (widget_width > 0 && widget_height > 0) {
-        double scale_x = (double)widget_width / pixbuf->get_width();
-        double scale_y = (double)widget_height / pixbuf->get_height();
-        double scale = std::min(scale_x, scale_y); // Maintain aspect ratio
+    try {
+        // Convert BGR to RGB (GTK expects RGB)
+        cv::cvtColor(display_frame, display_frame, cv::COLOR_BGR2RGB);
+        
+        // Ensure the frame data is continuous
+        if (!display_frame.isContinuous()) {
+            display_frame = display_frame.clone();
+        }
+
+        // Create pixbuf from frame data
+        auto pixbuf = Gdk::Pixbuf::create_from_data(
+            display_frame.data,
+            Gdk::Colorspace::RGB,
+            false,  // no alpha channel
+            8,      // 8 bits per sample
+            display_frame.cols,
+            display_frame.rows,
+            static_cast<int>(display_frame.step)
+        );
+
+        if (!pixbuf) {
+            std::cerr << "Failed to create pixbuf" << std::endl;
+            return;
+        }
+
+        // Get widget dimensions
+        int widget_width = m_video_display.get_width();
+        int widget_height = m_video_display.get_height();
+
+        if (widget_width <= 0 || widget_height <= 0) {
+            // If widget size is not yet available, use the frame size
+            widget_width = display_frame.cols;
+            widget_height = display_frame.rows;
+        }
+
+        // Calculate scaling while maintaining aspect ratio
+        double scale_x = static_cast<double>(widget_width) / pixbuf->get_width();
+        double scale_y = static_cast<double>(widget_height) / pixbuf->get_height();
+        double scale = std::min(scale_x, scale_y);
 
         int scaled_width = static_cast<int>(pixbuf->get_width() * scale);
         int scaled_height = static_cast<int>(pixbuf->get_height() * scale);
 
-        // Ensure scaled dimensions are valid
         if (scaled_width > 0 && scaled_height > 0) {
-            auto scaled_pixbuf = pixbuf->scale_simple(scaled_width, scaled_height, Gdk::InterpType::BILINEAR);
-            m_video_display.set(scaled_pixbuf);
-        } else {
-             m_video_display.set(pixbuf); // Fallback if scaling results in zero size
-        }
+            try {
+                auto scaled_pixbuf = pixbuf->scale_simple(
+                    scaled_width,
+                    scaled_height,
+                    Gdk::InterpType::BILINEAR
+                );
 
-    } else {
-         m_video_display.set(pixbuf); // Set unscaled if widget size is unknown
+                if (scaled_pixbuf) {
+                    m_video_display.set(scaled_pixbuf);
+                    if (frame_count % 30 == 0) {
+                        std::cout << "Updated display with frame size: " << scaled_width 
+                                 << "x" << scaled_height << std::endl;
+                    }
+                } else {
+                    std::cerr << "Failed to create scaled pixbuf" << std::endl;
+                }
+            } catch (const std::exception& e) {
+                std::cerr << "Error scaling pixbuf: " << e.what() << std::endl;
+            }
+        } else {
+            std::cerr << "Invalid scaled dimensions: " << scaled_width << "x" << scaled_height << std::endl;
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Error in update_frame: " << e.what() << std::endl;
     }
 }
 
 // --- Main Function --- 
 
 int main(int argc, char* argv[]) {
-    auto app = Gtk::Application::create("org.example.facerecognition");
-
-    return app->make_window_and_run<FaceRecognitionWindow>(argc, argv);
+    try {
+        auto app = Gtk::Application::create("org.example.facerecognition");
+        
+        // Create and show the window
+        return app->make_window_and_run<FaceRecognitionWindow>(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+        return 1;
+    }
 } 
