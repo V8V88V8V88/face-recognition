@@ -15,8 +15,7 @@ namespace fs = std::filesystem;
 
 const std::string FACES_DATA_FOLDER = "./data/faces/";
 const std::string MODELS_FOLDER = "./models/";
-const std::string MODEL_CONFIG = MODELS_FOLDER + "deploy.prototxt.txt";
-const std::string MODEL_BINARY = MODELS_FOLDER + "res10_300x300_ssd_iter_140000.caffemodel";
+const std::string FACE_CASCADE_FILE = MODELS_FOLDER + "haarcascade_frontalface_default.xml";
 const int REQUIRED_CAPTURES = 10;
 const double LBPH_THRESHOLD = 80.0; // Adjusted threshold
 const double PREDICTION_CONFIDENCE_THRESHOLD = 65.0; // Adjusted confidence check
@@ -45,9 +44,9 @@ protected:
 
     // OpenCV members
     cv::VideoCapture m_video_capture;
-    cv::dnn::Net m_face_detector_net;
+    cv::CascadeClassifier m_face_cascade;
     cv::Ptr<cv::face::LBPHFaceRecognizer> m_face_recognizer;
-    std::unordered_map<int, std::string> m_label_to_name_map; // Maps internal LBPH label index to person name
+    std::unordered_map<int, std::string> m_label_to_name_map;
 
     // State variables
     int m_captures_taken = 0;
@@ -130,11 +129,9 @@ FaceRecognitionWindow::FaceRecognitionWindow()
     m_button_box.append(m_detect_button);
 
     // Initialize OpenCV components
-    try {
-        m_face_detector_net = cv::dnn::readNetFromCaffe(MODEL_CONFIG, MODEL_BINARY);
-    } catch (const cv::Exception& ex) {
-        std::cerr << "Error loading face detector model: " << ex.what() << std::endl;
-        update_info_label("Error: Failed to load face detection model files from models/ directory!");
+    if (!m_face_cascade.load(FACE_CASCADE_FILE)) {
+        std::cerr << "Error loading face cascade classifier from: " << FACE_CASCADE_FILE << std::endl;
+        update_info_label("Error: Failed to load face detection model!");
         return;
     }
 
@@ -193,7 +190,15 @@ FaceRecognitionWindow::FaceRecognitionWindow()
 
     // Start timer for video feed updates (e.g., 30 FPS -> ~33ms)
     m_timer_connection = Glib::signal_timeout().connect(
-        sigc::mem_fun(*this, &FaceRecognitionWindow::on_timer_timeout), 33);
+        sigc::mem_fun(*this, &FaceRecognitionWindow::on_timer_timeout),
+        33,  // 30 FPS
+        Glib::PRIORITY_HIGH_IDLE  // Use high priority for smooth video
+    );
+
+    if (!m_timer_connection.connected()) {
+        std::cerr << "Failed to start video timer" << std::endl;
+        return;
+    }
 
     load_recognizer(); // Try to load existing trained data
     
@@ -226,45 +231,58 @@ void FaceRecognitionWindow::on_capture_button_clicked() {
         return;
     }
 
-    // --- Face Detection Logic (Similar to previous code) ---
-    cv::Mat blob = cv::dnn::blobFromImage(frame, 1.0, cv::Size(300, 300), cv::Scalar(104, 177, 123), false, false);
-    m_face_detector_net.setInput(blob);
-    cv::Mat detections = m_face_detector_net.forward();
-    float max_confidence = 0;
-    cv::Rect best_face_rect;
+    try {
+        // Convert frame to grayscale for face detection
+        cv::Mat gray;
+        cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
+        
+        // Detect faces
+        std::vector<cv::Rect> faces;
+        m_face_cascade.detectMultiScale(
+            gray,
+            faces,
+            1.1,  // scale factor
+            3,    // minimum neighbors
+            0,    // flags
+            cv::Size(30, 30) // minimum face size
+        );
 
-    for (int i = 0; i < detections.size[2]; ++i) {
-        float confidence = detections.ptr<float>(0)[i * 7 + 2];
-        if (confidence > 0.6) { // Use a slightly higher confidence for capture
-             if(confidence > max_confidence) {
-                max_confidence = confidence;
-                int x1 = static_cast<int>(detections.ptr<float>(0)[i * 7 + 3] * frame.cols);
-                int y1 = static_cast<int>(detections.ptr<float>(0)[i * 7 + 4] * frame.rows);
-                int x2 = static_cast<int>(detections.ptr<float>(0)[i * 7 + 5] * frame.cols);
-                int y2 = static_cast<int>(detections.ptr<float>(0)[i * 7 + 6] * frame.rows);
-                 // Clamp coordinates
-                x1 = std::max(0, x1);
-                y1 = std::max(0, y1);
-                x2 = std::min(frame.cols -1, x2);
-                y2 = std::min(frame.rows -1, y2);
-                 if (x2 > x1 && y2 > y1) {
-                     best_face_rect = cv::Rect(x1, y1, x2 - x1, y2 - y1);
-                 }
-             }
+        // Find the largest face
+        cv::Rect largest_face;
+        double max_area = 0;
+        
+        for (const auto& face : faces) {
+            double area = face.width * face.height;
+            if (area > max_area) {
+                max_area = area;
+                largest_face = face;
+            }
         }
-    }
 
-    if (max_confidence > 0.6 && !best_face_rect.empty()) {
-        save_captured_face(frame, best_face_rect, name);
-        m_captures_taken++;
-        m_capture_button.set_label("Capture (" + std::to_string(m_captures_taken) + "/" + std::to_string(REQUIRED_CAPTURES) + ")");
-        update_info_label("Captured image " + std::to_string(m_captures_taken) + " for " + name);
-        if(m_captures_taken >= REQUIRED_CAPTURES) {
-            update_info_label("Finished capturing for " + name + ". Ready to train.");
-            m_capture_button.set_sensitive(false);
+        if (max_area > 0) {
+            // Draw rectangle on display frame to show detected face
+            cv::Mat display_frame = frame.clone();
+            cv::rectangle(display_frame, largest_face, cv::Scalar(0, 255, 0), 2);
+            
+            // Save the face
+            save_captured_face(frame, largest_face, name);
+            m_captures_taken++;
+            m_capture_button.set_label("Capture (" + std::to_string(m_captures_taken) + "/" + std::to_string(REQUIRED_CAPTURES) + ")");
+            update_info_label("Captured image " + std::to_string(m_captures_taken) + " for " + name);
+            
+            if (m_captures_taken >= REQUIRED_CAPTURES) {
+                update_info_label("Finished capturing for " + name + ". Ready to train.");
+                m_capture_button.set_sensitive(false);
+            }
+        } else {
+            update_info_label("No face detected. Please ensure your face is clearly visible.");
         }
-    } else {
-        update_info_label("No face detected clearly for capture.");
+    } catch (const cv::Exception& e) {
+        std::cerr << "OpenCV error during capture: " << e.what() << std::endl;
+        update_info_label("Error during face detection. Please try again.");
+    } catch (const std::exception& e) {
+        std::cerr << "Error during capture: " << e.what() << std::endl;
+        update_info_label("Error during capture. Please try again.");
     }
 }
 
@@ -386,7 +404,11 @@ bool FaceRecognitionWindow::on_timer_timeout() {
     }
 
     try {
-        update_frame();
+        // Queue the frame update to run on the main GUI thread
+        Glib::signal_idle().connect_once(
+            sigc::mem_fun(*this, &FaceRecognitionWindow::update_frame)
+        );
+        
         return true; // Keep the timer running
     } catch (const std::exception& e) {
         std::cerr << "Timer error: " << e.what() << std::endl;
@@ -420,49 +442,48 @@ void FaceRecognitionWindow::update_frame() {
 
     // --- Detection Logic (Only if m_is_detecting is true) ---
     if (m_is_detecting) {
-        cv::Mat blob = cv::dnn::blobFromImage(frame, 1.0, cv::Size(300, 300), cv::Scalar(104, 177, 123), false, false);
-        m_face_detector_net.setInput(blob);
-        cv::Mat detections = m_face_detector_net.forward();
+        try {
+            // Convert to grayscale for face detection
+            cv::Mat gray;
+            cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
+            
+            // Detect faces
+            std::vector<cv::Rect> faces;
+            m_face_cascade.detectMultiScale(
+                gray,
+                faces,
+                1.1,  // scale factor
+                3,    // minimum neighbors
+                0,    // flags
+                cv::Size(30, 30) // minimum face size
+            );
 
-        for (int i = 0; i < detections.size[2]; ++i) {
-            float confidence = detections.ptr<float>(0)[i * 7 + 2];
-            if (confidence > 0.5) {
-                int x1 = static_cast<int>(detections.ptr<float>(0)[i * 7 + 3] * frame.cols);
-                int y1 = static_cast<int>(detections.ptr<float>(0)[i * 7 + 4] * frame.rows);
-                int x2 = static_cast<int>(detections.ptr<float>(0)[i * 7 + 5] * frame.cols);
-                int y2 = static_cast<int>(detections.ptr<float>(0)[i * 7 + 6] * frame.rows);
-
-                // Clamp coordinates
-                x1 = std::max(0, x1);
-                y1 = std::max(0, y1);
-                x2 = std::min(frame.cols -1, x2);
-                y2 = std::min(frame.rows -1, y2);
-
-                if (x2 > x1 && y2 > y1) {
-                    cv::Rect faceRect(x1, y1, x2 - x1, y2 - y1);
-                    cv::Mat faceROI = frame(faceRect);
-                    cv::Mat grayROI;
-                    cv::cvtColor(faceROI, grayROI, cv::COLOR_BGR2GRAY);
-                    cv::resize(grayROI, grayROI, cv::Size(100, 100));
-
-                    int predictedLabel = -1;
-                    double predictionConfidence = 0.0;
-                    m_face_recognizer->predict(grayROI, predictedLabel, predictionConfidence);
-
-                    std::string personName = "Unknown";
-                    if (predictedLabel != -1 && predictionConfidence < PREDICTION_CONFIDENCE_THRESHOLD) {
-                         if(m_label_to_name_map.count(predictedLabel)) {
-                            personName = m_label_to_name_map[predictedLabel];
-                         }
+            // Draw rectangles around detected faces
+            for (const auto& face : faces) {
+                cv::rectangle(display_frame, face, cv::Scalar(0, 255, 0), 2);
+                
+                // Predict who this face belongs to
+                cv::Mat face_roi = gray(face);
+                cv::resize(face_roi, face_roi, cv::Size(100, 100));
+                
+                int label = -1;
+                double confidence = 0.0;
+                try {
+                    m_face_recognizer->predict(face_roi, label, confidence);
+                    
+                    if (confidence < PREDICTION_CONFIDENCE_THRESHOLD && m_label_to_name_map.count(label) > 0) {
+                        std::string name = m_label_to_name_map[label];
+                        cv::putText(display_frame, name, 
+                                  cv::Point(face.x, face.y - 10),
+                                  cv::FONT_HERSHEY_SIMPLEX, 0.9,
+                                  cv::Scalar(0, 255, 0), 2);
                     }
-
-                    // Draw rectangle and text on the display_frame
-                    cv::rectangle(display_frame, faceRect, cv::Scalar(0, 255, 0), 2);
-                    std::string label_text = personName + " (" + std::to_string(predictionConfidence) + ")";
-                    cv::putText(display_frame, label_text, cv::Point(faceRect.x, faceRect.y - 10),
-                                cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1);
+                } catch (const cv::Exception& e) {
+                    // Silently ignore prediction errors
                 }
             }
+        } catch (const cv::Exception& e) {
+            std::cerr << "Error in face detection: " << e.what() << std::endl;
         }
     }
 
@@ -475,9 +496,19 @@ void FaceRecognitionWindow::update_frame() {
             display_frame = display_frame.clone();
         }
 
+        // Create a shared pointer for automatic cleanup
+        struct FrameData {
+            guint8* data;
+            FrameData(size_t size) : data(new guint8[size]) {}
+            ~FrameData() { delete[] data; }
+        };
+        
+        auto frame_data = std::make_shared<FrameData>(display_frame.total() * display_frame.elemSize());
+        std::memcpy(frame_data->data, display_frame.data, display_frame.total() * display_frame.elemSize());
+
         // Create pixbuf from frame data
         auto pixbuf = Gdk::Pixbuf::create_from_data(
-            display_frame.data,
+            frame_data->data,
             Gdk::Colorspace::RGB,
             false,  // no alpha channel
             8,      // 8 bits per sample
@@ -519,6 +550,7 @@ void FaceRecognitionWindow::update_frame() {
 
                 if (scaled_pixbuf) {
                     m_video_display.set(scaled_pixbuf);
+
                     if (frame_count % 30 == 0) {
                         std::cout << "Updated display with frame size: " << scaled_width 
                                  << "x" << scaled_height << std::endl;
@@ -535,6 +567,9 @@ void FaceRecognitionWindow::update_frame() {
     } catch (const std::exception& e) {
         std::cerr << "Error in update_frame: " << e.what() << std::endl;
     }
+
+    // Force an immediate redraw of the window
+    queue_draw();
 }
 
 // --- Main Function --- 
