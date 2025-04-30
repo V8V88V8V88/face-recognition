@@ -1,6 +1,7 @@
 #include <gtkmm.h>
 #include <opencv2/opencv.hpp>
 #include <opencv2/face.hpp>
+#include <opencv2/objdetect.hpp>
 #include <iostream>
 #include <filesystem>
 #include <vector>
@@ -17,7 +18,7 @@ namespace fs = std::filesystem;
 
 const std::string FACES_DATA_FOLDER = "./data/faces/";
 const std::string MODELS_FOLDER = "./models/";
-const std::string FACE_CASCADE_FILE = MODELS_FOLDER + "haarcascade_frontalface_alt2.xml";
+const std::string FACE_DETECTION_MODEL_FILE = MODELS_FOLDER + "face_detection_yunet_2023mar.onnx";
 const std::string TRAINED_MODEL_FILE = MODELS_FOLDER + "trained_model.yml";
 const std::string LABEL_MAPPING_FILE = MODELS_FOLDER + "label_mapping.txt";
 
@@ -38,7 +39,7 @@ private:
 
     // OpenCV members
     cv::VideoCapture m_video_capture;
-    cv::CascadeClassifier m_face_cascade;
+    cv::Ptr<cv::FaceDetectorYN> m_face_detector;
     cv::Ptr<cv::face::LBPHFaceRecognizer> m_face_recognizer;
     std::unordered_map<int, std::string> m_label_to_name_map;
 
@@ -59,12 +60,23 @@ public:
         set_title("Face Recognition Training & Detection");
         set_default_size(800, 600);
 
-        // Initialize face detection and recognition
-        if (!m_face_cascade.load(FACE_CASCADE_FILE)) {
-            std::cerr << "Error loading cascade classifier" << std::endl;
-            update_info_label("Error: Could not load face detection model!");
-            return;
+        // Initialize face detection (YuNet) and recognition
+        m_face_detector = cv::FaceDetectorYN::create(
+            FACE_DETECTION_MODEL_FILE,
+            "", // No config file needed for YuNet ONNX
+            cv::Size(320, 320), // Input size expected by model (can be adjusted)
+            0.9f, // Score threshold
+            0.3f, // NMS threshold
+            5000  // Top K detections
+        );
+
+        if (!m_face_detector) { // Check if pointer is valid
+             std::cerr << "Error loading YuNet face detector model!" << std::endl;
+             update_info_label("Error: Could not load face detection model!");
+             return; // Or handle error appropriately
         }
+        // Set input size for the detector based on frame size later if needed, or keep fixed
+        // m_face_detector->setInputSize(cv::Size(frame.cols, frame.rows)); // Example if dynamic size needed
 
         m_face_recognizer = cv::face::LBPHFaceRecognizer::create();
         
@@ -74,6 +86,10 @@ public:
         // Setup GUI
         set_child(m_main_box);
         m_main_box.set_margin(10);
+        m_main_box.set_margin_start(10);
+        m_main_box.set_margin_end(10);
+        m_main_box.set_margin_top(10);
+        m_main_box.set_margin_bottom(10);
 
         // Video display setup
         m_video_display.set_vexpand(true);
@@ -119,8 +135,6 @@ public:
         // Start video feed timer
         m_timer_connection = Glib::signal_timeout().connect(
             sigc::mem_fun(*this, &FaceRecognitionWindow::on_timeout), 33);
-
-        show();
     }
 
     bool init_camera() {
@@ -176,20 +190,41 @@ public:
             return;
         }
 
-        cv::Mat gray;
-        cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
-        std::vector<cv::Rect> faces;
-        
-        m_face_cascade.detectMultiScale(gray, faces, 1.1, 3, 0, cv::Size(30, 30));
+        // --- Use YuNet for detection ---
+        cv::Mat faces_mat; // Output matrix for detections
+        // Ensure detector input size matches frame or is set
+        m_face_detector->setInputSize(frame.size()); 
+        m_face_detector->detect(frame, faces_mat);
 
-        if (!faces.empty()) {
-            // Find the largest face
-            auto largest_face = std::max_element(faces.begin(), faces.end(),
-                [](const cv::Rect& a, const cv::Rect& b) {
-                    return a.area() < b.area();
-                });
+        if (!faces_mat.empty() && faces_mat.rows > 0) {
+            // Find the face with the highest score (confidence)
+            int best_face_idx = 0;
+            float highest_score = 0.0f;
+            for (int i = 0; i < faces_mat.rows; ++i) {
+                 float score = faces_mat.at<float>(i, 14); // Confidence score is at index 14
+                 if (score > highest_score) {
+                     highest_score = score;
+                     best_face_idx = i;
+                 }
+            }
 
-            save_captured_face(frame, *largest_face, name);
+            // Extract bounding box for the best face
+            // Box coordinates are floats at indices 0-3
+            int x = static_cast<int>(faces_mat.at<float>(best_face_idx, 0));
+            int y = static_cast<int>(faces_mat.at<float>(best_face_idx, 1));
+            int w = static_cast<int>(faces_mat.at<float>(best_face_idx, 2));
+            int h = static_cast<int>(faces_mat.at<float>(best_face_idx, 3));
+            cv::Rect best_face_rect(x, y, w, h);
+
+            // Ensure rect is within frame boundaries
+            best_face_rect &= cv::Rect(0, 0, frame.cols, frame.rows); 
+            if (best_face_rect.width <= 0 || best_face_rect.height <= 0) {
+                 update_info_label("Detected face rect invalid. Try again.");
+                 return;
+            }
+
+
+            save_captured_face(frame, best_face_rect, name);
             m_captures_taken++;
             
             m_capture_button.set_label("Capture (" + 
@@ -199,7 +234,7 @@ public:
             if (m_captures_taken >= REQUIRED_CAPTURES) {
                 update_info_label("Captured all required images for " + name + ". Ready to train!");
                 m_capture_button.set_sensitive(false);
-                m_captures_taken = 0;
+                m_captures_taken = 0; // Reset for next person
             }
         } else {
             update_info_label("No face detected! Please ensure your face is clearly visible.");
@@ -322,55 +357,90 @@ public:
         cv::Mat display_frame = frame.clone();
 
         if (m_is_detecting) {
-            cv::Mat gray;
-            cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
-            std::vector<cv::Rect> faces;
-            
-            m_face_cascade.detectMultiScale(gray, faces, 1.1, 3, 0, cv::Size(30, 30));
+            // --- Use YuNet for detection ---
+            cv::Mat faces_mat; // Output matrix for detections
+            // Ensure detector input size matches frame or is set
+            m_face_detector->setInputSize(frame.size()); 
+            m_face_detector->detect(frame, faces_mat);
 
-            for (const auto& face : faces) {
-                cv::rectangle(display_frame, face, cv::Scalar(0, 255, 0), 2);
+            if (!faces_mat.empty() && faces_mat.rows > 0) {
+                 for (int i = 0; i < faces_mat.rows; ++i) {
+                     // Extract bounding box
+                     int x = static_cast<int>(faces_mat.at<float>(i, 0));
+                     int y = static_cast<int>(faces_mat.at<float>(i, 1));
+                     int w = static_cast<int>(faces_mat.at<float>(i, 2));
+                     int h = static_cast<int>(faces_mat.at<float>(i, 3));
+                     cv::Rect face_rect(x, y, w, h);
 
-                cv::Mat face_roi = gray(face);
-                cv::resize(face_roi, face_roi, cv::Size(100, 100));
+                     // Ensure rect is within frame boundaries
+                     face_rect &= cv::Rect(0, 0, frame.cols, frame.rows);
+                     if (face_rect.width <= 0 || face_rect.height <= 0) continue; // Skip invalid rect
 
-                int label = -1;
-                double confidence = 0.0;
-                
-                try {
-                    m_face_recognizer->predict(face_roi, label, confidence);
-                    
-                    std::string name = "Unknown";
-                    cv::Scalar color(0, 0, 255); // Red for unknown
+                     // --- Perform Recognition (using the detected ROI) ---
+                     cv::Mat gray;
+                     cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY); // Convert whole frame once
+                     cv::Mat face_roi = gray(face_rect); // Extract ROI from gray frame
 
-                    if (confidence < RECOGNITION_THRESHOLD && m_label_to_name_map.count(label) > 0) {
-                        name = m_label_to_name_map[label];
-                        color = cv::Scalar(0, 255, 0); // Green for recognized
-                    }
+                     // Resize ROI for the recognizer
+                     cv::Mat resized_face_roi;
+                     cv::resize(face_roi, resized_face_roi, cv::Size(100, 100));
 
-                    std::ostringstream text;
-                    text << name << " (" << std::fixed << std::setprecision(1) 
-                         << (100 - confidence) << "%)";
+                     int label = -1;
+                     double confidence = 0.0;
+                     
+                     try {
+                         m_face_recognizer->predict(resized_face_roi, label, confidence);
+                         
+                         std::string name = "Unknown";
+                         cv::Scalar color(0, 0, 255); // Red for unknown
 
-                    int baseline = 0;
-                    cv::Size text_size = cv::getTextSize(text.str(), 
-                        cv::FONT_HERSHEY_SIMPLEX, 0.7, 2, &baseline);
-                    
-                    cv::Point text_org(face.x, face.y - 10);
-                    
-                    cv::rectangle(display_frame,
-                        cv::Point(text_org.x, text_org.y - text_size.height - 5),
-                        cv::Point(text_org.x + text_size.width, text_org.y + 5),
-                        cv::Scalar(0, 0, 0), -1);
-                        
-                    cv::putText(display_frame, text.str(), text_org,
-                        cv::FONT_HERSHEY_SIMPLEX, 0.7, color, 2);
-                    
-                } catch (const cv::Exception& e) {
-                    std::cerr << "Error during face recognition: " << e.what() << std::endl;
-                }
-            }
-        }
+                         // Use recognition threshold and check label exists
+                         if (confidence < RECOGNITION_THRESHOLD && m_label_to_name_map.count(label) > 0) {
+                             name = m_label_to_name_map[label];
+                             color = cv::Scalar(0, 255, 0); // Green for recognized
+                         } else {
+                              name = "Unknown"; // Explicitly set unknown if threshold not met or label missing
+                              color = cv::Scalar(0, 0, 255); 
+                         }
+
+
+                         // --- Draw bounding box and label ---
+                         cv::rectangle(display_frame, face_rect, color, 2);
+
+                         std::ostringstream text;
+                         text << name << " (" << std::fixed << std::setprecision(1) 
+                              << (100.0 - confidence) << "%)"; // Use 100.0 for float division
+
+                         int baseline = 0;
+                         cv::Size text_size = cv::getTextSize(text.str(), 
+                             cv::FONT_HERSHEY_SIMPLEX, 0.5, 1, &baseline); // Slightly smaller font
+                         
+                         // Position text above the box
+                         cv::Point text_org(face_rect.x, face_rect.y - 5); 
+                         // Ensure text isn't drawn off-screen
+                         if (text_org.y < text_size.height) {
+                              text_org.y = face_rect.y + face_rect.height + text_size.height + 5; // Below if no space above
+                         }
+                          if (text_org.x < 0) text_org.x = 0;
+
+
+                         // Simple black background rectangle for text
+                         cv::rectangle(display_frame,
+                             cv::Point(text_org.x, text_org.y - text_size.height - baseline),
+                             cv::Point(text_org.x + text_size.width, text_org.y + baseline),
+                             cv::Scalar(0, 0, 0), -1);
+                             
+                         cv::putText(display_frame, text.str(), text_org,
+                             cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1); // White text
+                         
+                     } catch (const cv::Exception& e) {
+                         std::cerr << "Error during face recognition: " << e.what() << std::endl;
+                         // Draw basic box even if recognition fails
+                         cv::rectangle(display_frame, face_rect, cv::Scalar(0, 255, 255), 2); // Yellow box on error
+                     }
+                } // End loop through faces
+            } // End if faces detected
+        } // End if m_is_detecting
 
         try {
             cv::Mat rgb_frame;
@@ -390,13 +460,14 @@ public:
             int widget_height = m_video_display.get_height();
 
             if (widget_width <= 0 || widget_height <= 0) {
-                widget_width = rgb_frame.cols;
-                widget_height = rgb_frame.rows;
+                 widget_width = m_video_display.get_allocated_width() > 0 ? m_video_display.get_allocated_width() : rgb_frame.cols;
+                 widget_height = m_video_display.get_allocated_height() > 0 ? m_video_display.get_allocated_height() : rgb_frame.rows;
             }
 
             double scale_x = static_cast<double>(widget_width) / pixbuf->get_width();
             double scale_y = static_cast<double>(widget_height) / pixbuf->get_height();
             double scale = std::min(scale_x, scale_y);
+            scale = std::max(0.01, scale);
 
             int scaled_width = static_cast<int>(pixbuf->get_width() * scale);
             int scaled_height = static_cast<int>(pixbuf->get_height() * scale);
@@ -411,12 +482,20 @@ public:
                 if (scaled_pixbuf) {
                     m_video_display.set(scaled_pixbuf);
                 }
+            } else if (pixbuf) {
+                m_video_display.set(pixbuf);
             }
+        } catch (const Glib::Error& e) {
+            std::cerr << "GDK/GTK Error updating display: " << e.what() << std::endl;
         } catch (const std::exception& e) {
-            std::cerr << "Error updating display: " << e.what() << std::endl;
+            std::cerr << "Standard Error updating display: " << e.what() << std::endl;
         }
 
         return true;
+    }
+
+    void update_info_label(const Glib::ustring& text) {
+        m_info_label.set_text(text);
     }
 };
 
