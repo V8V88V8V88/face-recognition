@@ -11,9 +11,9 @@ using namespace cv::face;
 using namespace std;
 namespace fs = std::filesystem;
 
-const string FACES_FOLDER = "faces";
-const string MODEL_CONFIG = "deploy.prototxt.txt";
-const string MODEL_BINARY = "res10_300x300_ssd_iter_140000.caffemodel";
+const string FACES_FOLDER = "./data/faces/";
+const string MODEL_CONFIG = "./models/deploy.prototxt.txt";
+const string MODEL_BINARY = "./models/res10_300x300_ssd_iter_140000.caffemodel";
 
 void recognizeFaces(const vector<Mat>& knownFaceImages, const vector<string>& knownFaceNames) {
     Net net = readNetFromCaffe(MODEL_CONFIG, MODEL_BINARY);
