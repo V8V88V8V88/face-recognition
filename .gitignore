@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+*.egg-info/
+.installed.cfg
+*.egg
+.ipynb_checkpoints
+.python-version
+.env
+.venv
+
+# C/C++ Build Artifacts
+*.o
+*.lo
+*.slo
+*.so
+*.a
+*.la
+*.lai
+*.dylib
+*.dll
+*.exe
+*.out
+face-recognition/bin/*
+!face-recognition/bin/.gitkeep # Keep bin directory, but ignore contents
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs and temporary files (adjust if needed)
+face-recognition/logs/*
+!face-recognition/logs/.gitkeep # Keep logs directory, but ignore contents
+*.log
+*.tmp
+*.temp 
