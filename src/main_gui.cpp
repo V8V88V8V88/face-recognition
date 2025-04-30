@@ -10,6 +10,8 @@
 #include <chrono>
 #include <thread> // For potential background processing
 #include <atomic> // For thread safety
+#include <sstream>
+#include <iomanip>
 
 namespace fs = std::filesystem;
 
@@ -468,19 +470,40 @@ void FaceRecognitionWindow::update_frame() {
                 
                 int label = -1;
                 double confidence = 0.0;
+                std::string display_text = "Unknown";
+                cv::Scalar text_color(0, 0, 255); // Red for unknown faces
+
                 try {
                     m_face_recognizer->predict(face_roi, label, confidence);
                     
                     if (confidence < PREDICTION_CONFIDENCE_THRESHOLD && m_label_to_name_map.count(label) > 0) {
-                        std::string name = m_label_to_name_map[label];
-                        cv::putText(display_frame, name, 
-                                  cv::Point(face.x, face.y - 10),
-                                  cv::FONT_HERSHEY_SIMPLEX, 0.9,
-                                  cv::Scalar(0, 255, 0), 2);
+                        display_text = m_label_to_name_map[label];
+                        text_color = cv::Scalar(0, 255, 0); // Green for recognized faces
                     }
+
+                    // Add confidence score to display text
+                    std::ostringstream conf_text;
+                    conf_text << std::fixed << std::setprecision(1) << confidence << "%";
+                    display_text += " (" + conf_text.str() + ")";
+
                 } catch (const cv::Exception& e) {
-                    // Silently ignore prediction errors
+                    // Keep "Unknown" as display text
                 }
+
+                // Draw name and confidence
+                int baseline = 0;
+                cv::Size text_size = cv::getTextSize(display_text, cv::FONT_HERSHEY_SIMPLEX, 0.7, 2, &baseline);
+                cv::Point text_org(face.x, face.y - 10);
+
+                // Draw background rectangle for text
+                cv::rectangle(display_frame, 
+                            cv::Point(text_org.x, text_org.y - text_size.height - 5),
+                            cv::Point(text_org.x + text_size.width, text_org.y + 5),
+                            cv::Scalar(0, 0, 0), -1);
+
+                // Draw text
+                cv::putText(display_frame, display_text, text_org,
+                          cv::FONT_HERSHEY_SIMPLEX, 0.7, text_color, 2);
             }
         } catch (const cv::Exception& e) {
             std::cerr << "Error in face detection: " << e.what() << std::endl;
