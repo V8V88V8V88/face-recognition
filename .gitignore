@@ -32,6 +32,29 @@ venv.bak/
 bin/*
 !bin/.gitkeep # Keep bin directory, but ignore contents
 
+# Build directories
+build/
+cmake-build-*/
+CMakeFiles/
+*.cmake
+Makefile
+CMakeCache.txt
+compile_commands.json
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.user
+*.suo
+*.ncb
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.VC.opendb
+
 # OS generated files
 .DS_Store
 .DS_Store?
@@ -46,4 +69,13 @@ logs/*
 !logs/.gitkeep # Keep logs directory, but ignore contents
 *.log
 *.tmp
-*.temp 
+*.temp
+
+# Project specific
+data/faces/*.jpg
+data/faces/*.png
+data/faces/*.jpeg
+!data/faces/.gitkeep
+models/*.caffemodel
+models/*.prototxt
+!models/.gitkeep 
