@@ -4,6 +4,10 @@ import os
 import threading
 import queue
 
+# Set QT_QPA_PLATFORM environment variable to use XCB
+# This is often needed for OpenCV GUI functions on Wayland systems
+os.environ['QT_QPA_PLATFORM'] = 'xcb'
+
 faces_folder = 'data/faces'
 face_recognition_threshold = 0.6
 
@@ -58,49 +62,86 @@ def main():
     load_known_faces(faces_folder)
 
     vid = cv2.VideoCapture(0)
+    # Consider lowering resolution for better performance if needed
+    # vid.set(3, 640)
+    # vid.set(4, 480)
     vid.set(3, 1280)
     vid.set(4, 720)
 
-    frame_queue = queue.Queue()
+    frame_queue = queue.Queue(maxsize=10) # Increase queue size slightly
     result_queue = queue.Queue()
 
-    num_threads = 4
+    num_threads = 4 # Use a fixed number of threads
     threads = [threading.Thread(target=process_frame, args=(frame_queue, result_queue)) for _ in range(num_threads)]
     for thread in threads:
+        thread.daemon = True # Make threads daemon so they exit when main exits
         thread.start()
+
+    frame_count = 0
+    FRAME_SKIP = 2 # Process every 2nd frame (adjust as needed)
 
     while True:
         ret, frame = vid.read()
         if not ret:
+            print("Failed to grab frame, exiting.")
             break
 
-        frame_queue.put(frame)
-        result = result_queue.get()
-        frame, face_locations, face_names = result
+        frame_count += 1
+        if frame_count % FRAME_SKIP == 0:
+            # Put frame into the queue for processing, but don't block if full
+            try:
+                frame_queue.put(frame, block=False)
+            except queue.Full:
+                # Skip frame if the processing queue is full
+                pass
 
-        for (top, right, bottom, left), name in zip(face_locations, face_names):
-            top *= 4
-            right *= 4
-            bottom *= 4
-            left *= 4
+        # Only display frames when a result is ready from the queue
+        try:
+            processed_frame, face_locations, face_names = result_queue.get(block=False)
 
-            cv2.rectangle(frame, (left, top), (right, bottom), (0, 0, 255), 2)
-            cv2.rectangle(frame, (left, bottom - 35), (right, bottom), (0, 0, 255), cv2.FILLED)
-            font = cv2.FONT_HERSHEY_DUPLEX
-            cv2.putText(frame, name, (left + 6, bottom - 6), font, 0.5, (255, 255, 255), 1)
+            # Draw results on the *processed* frame
+            for (top, right, bottom, left), name in zip(face_locations, face_names):
+                # Scale back up face locations since they were detected on scaled frame
+                top *= 4
+                right *= 4
+                bottom *= 4
+                left *= 4
 
-        cv2.imshow('frame', frame)
+                # Draw a box around the face
+                cv2.rectangle(processed_frame, (left, top), (right, bottom), (0, 0, 255), 2)
+
+                # Draw a label with a name below the face
+                cv2.rectangle(processed_frame, (left, bottom - 35), (right, bottom), (0, 0, 255), cv2.FILLED)
+                font = cv2.FONT_HERSHEY_DUPLEX
+                cv2.putText(processed_frame, name, (left + 6, bottom - 6), font, 0.5, (255, 255, 255), 1)
+
+            # Display the resulting frame
+            cv2.imshow('Face Recognition', processed_frame)
+
+        except queue.Empty:
+            # If no processed frame is ready, do nothing with display in this iteration
+            pass
+
+        # Hit 'q' on the keyboard to quit!
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
+    print("Shutting down...")
+    # Signal worker threads to exit
     for _ in range(num_threads):
-        frame_queue.put(None)
+        try:
+            frame_queue.put(None, block=False) # Use non-blocking put
+        except queue.Full:
+            pass # Ignore if queue is full during shutdown signal
 
-    for thread in threads:
-        thread.join()
+    # Wait for threads to finish (optional with daemon threads, but good practice)
+    # for thread in threads:
+    #     thread.join(timeout=1.0) # Add timeout to prevent hanging
 
+    # Release handle to the webcam
     vid.release()
     cv2.destroyAllWindows()
+    print("Shutdown complete.")
 
 if __name__ == '__main__':
     try:
