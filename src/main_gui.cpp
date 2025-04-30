@@ -1,7 +1,7 @@
 #include <gtkmm.h>
 #include <opencv2/opencv.hpp>
-#include <opencv2/face.hpp>
 #include <opencv2/objdetect.hpp>
+#include "FaceRecognizer.hpp"
 #include <iostream>
 #include <filesystem>
 #include <vector>
@@ -17,13 +17,14 @@
 namespace fs = std::filesystem;
 
 const std::string FACES_DATA_FOLDER = "./data/faces/";
-const std::string MODELS_FOLDER = "./models/";
-const std::string FACE_DETECTION_MODEL_FILE = MODELS_FOLDER + "face_detection_yunet_2023mar.onnx";
-const std::string TRAINED_MODEL_FILE = MODELS_FOLDER + "trained_model.yml";
-const std::string LABEL_MAPPING_FILE = MODELS_FOLDER + "label_mapping.txt";
+
+// Construct std::string objects for concatenation
+const std::string MODELS_FOLDER_STR = MODELS_FOLDER; // Use the macro defined by CMake
+const std::string FACE_CASCADE_FILE = MODELS_FOLDER_STR + "haarcascade_frontalface_alt2.xml";
+const std::string KNN_MODEL_FILE = MODELS_FOLDER_STR + "knn_model.yml";
+const std::string LABEL_MAPPING_FILE = MODELS_FOLDER_STR + "label_mapping.txt";
 
 const int REQUIRED_CAPTURES = 10;
-const double RECOGNITION_THRESHOLD = 65.0;
 
 class FaceRecognitionWindow : public Gtk::Window {
 private:
@@ -39,9 +40,8 @@ private:
 
     // OpenCV members
     cv::VideoCapture m_video_capture;
-    cv::Ptr<cv::FaceDetectorYN> m_face_detector;
-    cv::Ptr<cv::face::LBPHFaceRecognizer> m_face_recognizer;
-    std::unordered_map<int, std::string> m_label_to_name_map;
+    cv::CascadeClassifier m_face_cascade;
+    FaceRecognizer m_recognizer;
 
     // State variables
     int m_captures_taken = 0;
@@ -60,28 +60,19 @@ public:
         set_title("Face Recognition Training & Detection");
         set_default_size(800, 600);
 
-        // Initialize face detection (YuNet) and recognition
-        m_face_detector = cv::FaceDetectorYN::create(
-            FACE_DETECTION_MODEL_FILE,
-            "", // No config file needed for YuNet ONNX
-            cv::Size(320, 320), // Input size expected by model (can be adjusted)
-            0.9f, // Score threshold
-            0.3f, // NMS threshold
-            5000  // Top K detections
-        );
-
-        if (!m_face_detector) { // Check if pointer is valid
-             std::cerr << "Error loading YuNet face detector model!" << std::endl;
+        // Initialize face detection (Haar Cascade)
+        if (!m_face_cascade.load(FACE_CASCADE_FILE)) {
+             std::cerr << "Error loading cascade classifier" << std::endl;
              update_info_label("Error: Could not load face detection model!");
-             return; // Or handle error appropriately
+             return;
         }
-        // Set input size for the detector based on frame size later if needed, or keep fixed
-        // m_face_detector->setInputSize(cv::Size(frame.cols, frame.rows)); // Example if dynamic size needed
 
-        m_face_recognizer = cv::face::LBPHFaceRecognizer::create();
-        
-        // Try to load existing model
-        load_recognizer();
+        // --- Try to load existing recognition data via FaceRecognizer ---
+        if (m_recognizer.load(KNN_MODEL_FILE, LABEL_MAPPING_FILE)) {
+            update_info_label("Loaded existing recognition model.");
+        } else {
+             update_info_label("No model found. Train model after capturing.");
+        }
 
         // Setup GUI
         set_child(m_main_box);
@@ -190,41 +181,26 @@ public:
             return;
         }
 
-        // --- Use YuNet for detection ---
-        cv::Mat faces_mat; // Output matrix for detections
-        // Ensure detector input size matches frame or is set
-        m_face_detector->setInputSize(frame.size()); 
-        m_face_detector->detect(frame, faces_mat);
+        // --- Use Haar Cascade for detection ---
+        cv::Mat gray;
+        cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
+        std::vector<cv::Rect> faces;
+        m_face_cascade.detectMultiScale(gray, faces, 1.1, 3, 0, cv::Size(30, 30));
 
-        if (!faces_mat.empty() && faces_mat.rows > 0) {
-            // Find the face with the highest score (confidence)
-            int best_face_idx = 0;
-            float highest_score = 0.0f;
-            for (int i = 0; i < faces_mat.rows; ++i) {
-                 float score = faces_mat.at<float>(i, 14); // Confidence score is at index 14
-                 if (score > highest_score) {
-                     highest_score = score;
-                     best_face_idx = i;
-                 }
-            }
-
-            // Extract bounding box for the best face
-            // Box coordinates are floats at indices 0-3
-            int x = static_cast<int>(faces_mat.at<float>(best_face_idx, 0));
-            int y = static_cast<int>(faces_mat.at<float>(best_face_idx, 1));
-            int w = static_cast<int>(faces_mat.at<float>(best_face_idx, 2));
-            int h = static_cast<int>(faces_mat.at<float>(best_face_idx, 3));
-            cv::Rect best_face_rect(x, y, w, h);
-
-            // Ensure rect is within frame boundaries
-            best_face_rect &= cv::Rect(0, 0, frame.cols, frame.rows); 
-            if (best_face_rect.width <= 0 || best_face_rect.height <= 0) {
+        if (!faces.empty()) {
+            // Find the largest face (original logic)
+            auto largest_face = std::max_element(faces.begin(), faces.end(),
+                [](const cv::Rect& a, const cv::Rect& b) {
+                    return a.area() < b.area();
+                });
+            
+            // Ensure rect is valid (basic check)
+            if (largest_face->width <= 0 || largest_face->height <= 0) {
                  update_info_label("Detected face rect invalid. Try again.");
                  return;
             }
 
-
-            save_captured_face(frame, best_face_rect, name);
+            save_captured_face(frame, *largest_face, name);
             m_captures_taken++;
             
             m_capture_button.set_label("Capture (" + 
@@ -242,97 +218,48 @@ public:
     }
 
     void on_train_button_clicked() {
-        update_info_label("Training started...");
+        update_info_label("KNN Training started...");
+        // Use a separate thread for training to avoid blocking GUI?
+        // For simplicity, run directly for now.
         
-        std::vector<cv::Mat> faces;
-        std::vector<int> labels;
-        std::unordered_map<std::string, int> name_to_label;
-        m_label_to_name_map.clear();
-        int next_label = 0;
-
-        try {
-            for (const auto& entry : fs::directory_iterator(FACES_DATA_FOLDER)) {
-                if (entry.path().extension() != ".jpg") continue;
-
-                std::string filename = entry.path().stem().string();
-                size_t pos = filename.find_last_of('_');
-                if (pos == std::string::npos) continue;
-
-                std::string name = filename.substr(0, pos);
-                cv::Mat face = cv::imread(entry.path().string(), cv::IMREAD_GRAYSCALE);
-                
-                if (face.empty()) {
-                    std::cerr << "Could not read image: " << entry.path() << std::endl;
-                    continue;
-                }
-
-                int label;
-                if (name_to_label.find(name) == name_to_label.end()) {
-                    label = next_label++;
-                    name_to_label[name] = label;
-                    m_label_to_name_map[label] = name;
-                    std::cout << "Assigned label " << label << " to " << name << std::endl;
-                } else {
-                    label = name_to_label[name];
-                }
-
-                faces.push_back(face);
-                labels.push_back(label);
-            }
-
-            if (faces.empty()) {
-                update_info_label("No training images found!");
-                return;
-            }
-
-            m_face_recognizer->train(faces, labels);
-            m_face_recognizer->save(TRAINED_MODEL_FILE);
-
-            // Save label mapping
-            std::ofstream mapping_file(LABEL_MAPPING_FILE);
-            for (const auto& pair : m_label_to_name_map) {
-                mapping_file << pair.first << "," << pair.second << "\n";
-            }
-
-            update_info_label("Training complete with " + std::to_string(faces.size()) + 
-                            " images for " + std::to_string(next_label) + " people.");
-            
-        } catch (const std::exception& e) {
-            std::cerr << "Error during training: " << e.what() << std::endl;
-            update_info_label("Error during training!");
+        // Ensure data folder exists before calling train
+        if (!fs::exists(FACES_DATA_FOLDER)) {
+             fs::create_directories(FACES_DATA_FOLDER);
+             update_info_label("Data folder created. Please capture images first.");
+             return; // Can't train without data folder
         }
-    }
+        if (!fs::is_directory(FACES_DATA_FOLDER)) {
+             update_info_label("Error: Data path exists but is not a directory.");
+             return;
+        }
 
-    void load_recognizer() {
-        try {
-            if (fs::exists(TRAINED_MODEL_FILE)) {
-                m_face_recognizer->read(TRAINED_MODEL_FILE);
-                
-                if (fs::exists(LABEL_MAPPING_FILE)) {
-                    std::ifstream mapping_file(LABEL_MAPPING_FILE);
-                    std::string line;
-                    while (std::getline(mapping_file, line)) {
-                        std::istringstream iss(line);
-                        std::string label_str, name;
-                        if (std::getline(iss, label_str, ',') && std::getline(iss, name)) {
-                            m_label_to_name_map[std::stoi(label_str)] = name;
-                        }
-                    }
-                    update_info_label("Loaded model with " + 
-                        std::to_string(m_label_to_name_map.size()) + " people.");
-                }
-            }
-        } catch (const cv::Exception& e) {
-            std::cerr << "Error loading model: " << e.what() << std::endl;
+        // Ensure models folder exists
+         if (!fs::exists(MODELS_FOLDER_STR)) {
+             fs::create_directories(MODELS_FOLDER_STR);
+         }
+
+        bool success = m_recognizer.train(FACES_DATA_FOLDER, KNN_MODEL_FILE, LABEL_MAPPING_FILE);
+
+        if (success) {
+            update_info_label("KNN Training complete.");
+        } else {
+            update_info_label("KNN Training failed. Check console output.");
         }
     }
 
     void on_detect_button_clicked() {
         if (!m_is_detecting) {
-            if (m_label_to_name_map.empty()) {
-                update_info_label("Please train the model first!");
+            // Use the recognizer's readiness check
+            if (!m_recognizer.is_ready()) {
+                 update_info_label("Recognizer not ready. Please train model first!");
+                 return;
+            }
+            // Check label map specifically (redundant if is_ready() includes it, but safe)
+            if (m_recognizer.get_label_map().empty()) {
+                update_info_label("Label map empty. Please train model first!");
                 return;
             }
+            
             m_is_detecting = true;
             m_detect_button.set_label("Stop Detection");
             m_capture_button.set_sensitive(false);
@@ -355,91 +282,62 @@ public:
         }
 
         cv::Mat display_frame = frame.clone();
+        cv::Mat gray; // Declare gray frame once
+        bool gray_converted = false;
 
         if (m_is_detecting) {
-            // --- Use YuNet for detection ---
-            cv::Mat faces_mat; // Output matrix for detections
-            // Ensure detector input size matches frame or is set
-            m_face_detector->setInputSize(frame.size()); 
-            m_face_detector->detect(frame, faces_mat);
+            // --- Use Haar Cascade for detection ---
+            cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY);
+            gray_converted = true;
+            std::vector<cv::Rect> faces;
+            m_face_cascade.detectMultiScale(gray, faces, 1.1, 3, 0, cv::Size(30, 30)); 
 
-            if (!faces_mat.empty() && faces_mat.rows > 0) {
-                 for (int i = 0; i < faces_mat.rows; ++i) {
-                     // Extract bounding box
-                     int x = static_cast<int>(faces_mat.at<float>(i, 0));
-                     int y = static_cast<int>(faces_mat.at<float>(i, 1));
-                     int w = static_cast<int>(faces_mat.at<float>(i, 2));
-                     int h = static_cast<int>(faces_mat.at<float>(i, 3));
-                     cv::Rect face_rect(x, y, w, h);
+            for (const auto& face_rect : faces) {
+                if (face_rect.width <= 0 || face_rect.height <= 0) continue;
+                
+                cv::Mat face_roi = gray(face_rect); // Use the already converted gray frame
+                if (face_roi.empty()) continue;
+                
+                // --- Perform Recognition using FaceRecognizer ---
+                std::string name = "Unknown";
+                cv::Scalar color(0, 0, 255); // Default red
 
-                     // Ensure rect is within frame boundaries
-                     face_rect &= cv::Rect(0, 0, frame.cols, frame.rows);
-                     if (face_rect.width <= 0 || face_rect.height <= 0) continue; // Skip invalid rect
-
-                     // --- Perform Recognition (using the detected ROI) ---
-                     cv::Mat gray;
-                     cv::cvtColor(frame, gray, cv::COLOR_BGR2GRAY); // Convert whole frame once
-                     cv::Mat face_roi = gray(face_rect); // Extract ROI from gray frame
-
-                     // Resize ROI for the recognizer
-                     cv::Mat resized_face_roi;
-                     cv::resize(face_roi, resized_face_roi, cv::Size(100, 100));
-
-                     int label = -1;
-                     double confidence = 0.0;
-                     
-                     try {
-                         m_face_recognizer->predict(resized_face_roi, label, confidence);
-                         
-                         std::string name = "Unknown";
-                         cv::Scalar color(0, 0, 255); // Red for unknown
-
-                         // Use recognition threshold and check label exists
-                         if (confidence < RECOGNITION_THRESHOLD && m_label_to_name_map.count(label) > 0) {
-                             name = m_label_to_name_map[label];
-                             color = cv::Scalar(0, 255, 0); // Green for recognized
-                         } else {
-                              name = "Unknown"; // Explicitly set unknown if threshold not met or label missing
-                              color = cv::Scalar(0, 0, 255); 
-                         }
-
-
-                         // --- Draw bounding box and label ---
-                         cv::rectangle(display_frame, face_rect, color, 2);
-
-                         std::ostringstream text;
-                         text << name << " (" << std::fixed << std::setprecision(1) 
-                              << (100.0 - confidence) << "%)"; // Use 100.0 for float division
-
-                         int baseline = 0;
-                         cv::Size text_size = cv::getTextSize(text.str(), 
-                             cv::FONT_HERSHEY_SIMPLEX, 0.5, 1, &baseline); // Slightly smaller font
-                         
-                         // Position text above the box
-                         cv::Point text_org(face_rect.x, face_rect.y - 5); 
-                         // Ensure text isn't drawn off-screen
-                         if (text_org.y < text_size.height) {
-                              text_org.y = face_rect.y + face_rect.height + text_size.height + 5; // Below if no space above
-                         }
-                          if (text_org.x < 0) text_org.x = 0;
-
-
-                         // Simple black background rectangle for text
-                         cv::rectangle(display_frame,
-                             cv::Point(text_org.x, text_org.y - text_size.height - baseline),
-                             cv::Point(text_org.x + text_size.width, text_org.y + baseline),
-                             cv::Scalar(0, 0, 0), -1);
-                             
-                         cv::putText(display_frame, text.str(), text_org,
-                             cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1); // White text
-                         
-                     } catch (const cv::Exception& e) {
-                         std::cerr << "Error during face recognition: " << e.what() << std::endl;
-                         // Draw basic box even if recognition fails
-                         cv::rectangle(display_frame, face_rect, cv::Scalar(0, 255, 255), 2); // Yellow box on error
+                try {
+                     name = m_recognizer.predict(face_roi);
+                    
+                     if (name != "Unknown") {
+                          color = cv::Scalar(0, 255, 0); // Green if recognized
                      }
-                } // End loop through faces
-            } // End if faces detected
+                } catch (const std::exception& e) {
+                    std::cerr << "Error during prediction: " << e.what() << std::endl;
+                    name = "Error";
+                    color = cv::Scalar(0, 255, 255); // Yellow on error
+                }
+
+                // --- Draw bounding box and label ---
+                cv::rectangle(display_frame, face_rect, color, 2);
+                std::ostringstream text;
+                text << name;
+                int baseline = 0;
+                cv::Size text_size = cv::getTextSize(text.str(), 
+                    cv::FONT_HERSHEY_SIMPLEX, 0.7, 2, &baseline); 
+                cv::Point text_org(face_rect.x, face_rect.y - 10);
+                // ... (Text positioning logic) ...
+                 if (text_org.y < text_size.height) {
+                         text_org.y = face_rect.y + face_rect.height + text_size.height + 5;
+                    }
+                 if (text_org.x < 0) text_org.x = 0;
+                 if (text_org.x + text_size.width > display_frame.cols) {
+                      text_org.x = display_frame.cols - text_size.width; 
+                 }
+                cv::rectangle(display_frame,
+                    cv::Point(text_org.x, text_org.y - text_size.height - baseline - 5),
+                    cv::Point(text_org.x + text_size.width, text_org.y + baseline),
+                    cv::Scalar(0, 0, 0), -1);
+                cv::putText(display_frame, text.str(), text_org,
+                    cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(255, 255, 255), 2);
+            
+            } // End loop through faces
         } // End if m_is_detecting
 
         try {
@@ -504,8 +402,8 @@ int main(int argc, char* argv[]) {
         fs::create_directories(FACES_DATA_FOLDER);
     }
     
-    if (!fs::exists(MODELS_FOLDER)) {
-        fs::create_directories(MODELS_FOLDER);
+    if (!fs::exists(MODELS_FOLDER_STR)) {
+        fs::create_directories(MODELS_FOLDER_STR);
     }
 
     auto app = Gtk::Application::create("org.example.facerecognition");

@@ -20,7 +20,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 # Add source files
 add_executable(FaceRecognitionGui
     src/main_gui.cpp
-    src/FaceDetection.cpp
+    src/FaceRecognizer.cpp
 )
 
 # Link libraries
@@ -28,6 +28,7 @@ target_link_libraries(FaceRecognitionGui
     ${OpenCV_LIBS}
     ${GTKMM_LIBRARIES}
     opencv_face
+    opencv_ml
 )
 
 # Add compile definitions
