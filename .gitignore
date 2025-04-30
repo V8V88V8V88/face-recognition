@@ -29,8 +29,8 @@ venv.bak/
 *.dll
 *.exe
 *.out
-face-recognition/bin/*
-!face-recognition/bin/.gitkeep # Keep bin directory, but ignore contents
+bin/*
+!bin/.gitkeep # Keep bin directory, but ignore contents
 
 # OS generated files
 .DS_Store
@@ -42,8 +42,8 @@ ehthumbs.db
 Thumbs.db
 
 # Logs and temporary files (adjust if needed)
-face-recognition/logs/*
-!face-recognition/logs/.gitkeep # Keep logs directory, but ignore contents
+logs/*
+!logs/.gitkeep # Keep logs directory, but ignore contents
 *.log
 *.tmp
 *.temp 
