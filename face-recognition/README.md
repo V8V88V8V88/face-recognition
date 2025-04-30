@@ -133,19 +133,22 @@ Use the `video1.py` script to detect faces from a video file:
 python src/video1.py --input ./tests/test.mp4
 ```
 
-### 4. Run the C++ Face Detection:
+### 4. Run the C++ Face Detection / Recognition (Live Webcam):
 
-If you prefer using C++, you can compile and run the C++ source:
+This program uses the models and known faces from `data/faces/` to perform real-time recognition using your webcam.
 
 **Note:** Ensure you have the OpenCV development libraries installed (e.g., `opencv-devel` on Fedora/CentOS, `libopencv-dev` on Debian/Ubuntu).
 
 ```bash
-# Compile (assuming you are in the face-recognition directory)
-# Adjust the -I path if OpenCV headers are installed elsewhere
-g++ src/FaceDetection.cpp -o bin/FaceDetectionLite -I/usr/include/opencv4 -lopencv_core -lopencv_imgproc -lopencv_highgui -lopencv_objdetect -lopencv_dnn -lopencv_face -lopencv_videoio -lopencv_imgcodecs
+# Change to the project directory first
+cd face-recognition
 
-# Run (assuming you are in the face-recognition directory)
-./bin/FaceDetectionLite ./data/faces/aman.jpg
+# Compile (if needed)
+# Adjust the -I path if OpenCV headers are installed elsewhere. Add -lstdc++fs if needed for <filesystem>.
+g++ src/FaceDetection.cpp -o bin/FaceDetectionLite -I/usr/include/opencv4 -lopencv_core -lopencv_imgproc -lopencv_highgui -lopencv_objdetect -lopencv_dnn -lopencv_face -lopencv_videoio -lopencv_imgcodecs -lstdc++fs
+
+# Run (ensure you are in the face-recognition directory)
+./bin/FaceDetectionLite
 ```
 
 ## Models
