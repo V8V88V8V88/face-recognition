@@ -1,226 +1,260 @@
 #include "FaceRecognizer.hpp"
-#include <iostream>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/face.hpp>
+#include <filesystem>
 #include <fstream>
-#include <sstream>
-#include <stdexcept> // For runtime_error
+#include <iostream>
 
-FaceRecognizer::FaceRecognizer() {
-    // Initialize KNN model pointer but don't create until training/loading
+namespace fs = std::filesystem;
+
+FaceRecognizer::FaceRecognizer() : is_trained_(false) {
+    // Create LBPH face recognizer with custom parameters for better recognition
+    model_ = cv::face::LBPHFaceRecognizer::create(
+        1,      // radius
+        8,      // neighbors
+        8,      // grid_x
+        8,      // grid_y
+        200.0   // threshold
+    );
 }
 
-// Trains the KNN model using images from the specified folder.
-bool FaceRecognizer::train(const std::string& data_folder, 
-                           const std::string& model_save_path, 
-                           const std::string& map_save_path) {
-    std::cout << "Starting KNN Training from folder: " << data_folder << std::endl;
-    is_trained_ = false; // Reset training status
-    
-    cv::Mat training_data;
-    cv::Mat training_labels;
-    std::unordered_map<std::string, int> name_to_label; // Local map for this training session
-    label_to_name_map_.clear(); // Clear the member map
-    int next_label = 0;
-    int images_processed = 0;
-
+bool FaceRecognizer::train(const std::string& data_folder, const std::string& model_path, const std::string& label_map_path) {
     try {
-        if (!fs::exists(data_folder)) {
-             std::cerr << "Error: Faces data folder not found: " << data_folder << std::endl;
-             return false;
-        }
+        std::vector<cv::Mat> training_data;
+        std::vector<int> labels;
+        label_to_name_map_.clear();
 
+        std::cout << "Starting training with images from: " << data_folder << std::endl;
+        
+        // Count files for better progress reporting
+        int total_files = 0;
         for (const auto& entry : fs::directory_iterator(data_folder)) {
-            fs::path entry_path = entry.path();
-            if (entry_path.extension() != ".jpg" && entry_path.extension() != ".png") continue;
-
-            std::string filename = entry_path.stem().string();
-            size_t pos = filename.find_last_of('_');
-            if (pos == std::string::npos) {
-                 std::cerr << "Warning: Skipping file with unexpected name format: " << entry_path << std::endl;
-                 continue;
+            if (entry.path().extension() == ".jpg" || entry.path().extension() == ".png") {
+                total_files++;
             }
+        }
+        
+        std::cout << "Found " << total_files << " image files to process" << std::endl;
+        int processed = 0;
 
-            std::string name = filename.substr(0, pos);
-            cv::Mat face_img = cv::imread(entry_path.string(), cv::IMREAD_GRAYSCALE);
-            
-            if (face_img.empty()) {
-                std::cerr << "Warning: Could not read image: " << entry_path << std::endl;
-                continue;
+        // Process all images in the data folder
+        for (const auto& entry : fs::directory_iterator(data_folder)) {
+            if (entry.path().extension() == ".jpg" || entry.path().extension() == ".png") {
+                // Extract name from filename (remove extension and timestamp)
+                std::string name = entry.path().stem().string();
+                
+                // Handle different naming formats
+                // Format: "name_timestamp.jpg" or just "name.jpg"
+                size_t underscore_pos = name.find_last_of('_');
+                if (underscore_pos != std::string::npos) {
+                    // Check if what follows the underscore is a timestamp (all digits)
+                    std::string potential_timestamp = name.substr(underscore_pos + 1);
+                    bool is_timestamp = !potential_timestamp.empty() && 
+                                       std::all_of(potential_timestamp.begin(), 
+                                                  potential_timestamp.end(), 
+                                                  [](unsigned char c){ return std::isdigit(c); });
+                    
+                    if (is_timestamp) {
+                        name = name.substr(0, underscore_pos);
+                    }
+                }
+                
+                // Load image in grayscale
+                cv::Mat img = cv::imread(entry.path().string(), cv::IMREAD_GRAYSCALE);
+                if (img.empty()) {
+                    std::cerr << "Failed to load image: " << entry.path().string() << std::endl;
+                    continue;
+                }
+
+                // Ensure image is in 8-bit format
+                if (img.type() != CV_8U) {
+                    img.convertTo(img, CV_8U);
+                }
+
+                // Apply histogram equalization for better feature extraction
+                cv::Mat equalized;
+                cv::equalizeHist(img, equalized);
+
+                // Resize image
+                cv::Mat resized;
+                cv::resize(equalized, resized, training_img_size_, 0, 0, cv::INTER_LINEAR);
+
+                // Add to training data
+                training_data.push_back(resized);
+                
+                // Assign numeric label to name
+                if (label_to_name_map_.find(name) == label_to_name_map_.end()) {
+                    int label = static_cast<int>(label_to_name_map_.size());
+                    label_to_name_map_[name] = label;
+                    std::cout << "Assigned label " << label << " to name " << name << std::endl;
+                }
+                labels.push_back(label_to_name_map_[name]);
+                
+                // Update progress
+                processed++;
+                if (processed % 10 == 0 || processed == total_files) {
+                    std::cout << "Processed " << processed << "/" << total_files << " images" << std::endl;
+                }
             }
-
-            // --- Preprocessing --- 
-            cv::Mat resized_face;
-            cv::resize(face_img, resized_face, training_img_size_);
-            cv::Mat flattened_face = resized_face.reshape(1, 1);
-            flattened_face.convertTo(flattened_face, CV_32F);
-
-            // --- Assign label --- 
-            int label;
-            if (name_to_label.find(name) == name_to_label.end()) {
-                label = next_label++;
-                name_to_label[name] = label;
-                label_to_name_map_[label] = name; // Update member map
-                std::cout << "Assigning label " << label << " to " << name << std::endl;
-            } else {
-                label = name_to_label[name];
-            }
-
-            training_data.push_back(flattened_face);
-            training_labels.push_back(label);
-            images_processed++;
         }
 
-        if (training_data.empty() || training_labels.empty()) {
-            std::cerr << "Error: No valid training images found!" << std::endl;
+        if (training_data.empty()) {
+            std::cerr << "No valid training images found in " << data_folder << std::endl;
             return false;
         }
 
-        training_labels.convertTo(training_labels, CV_32S);
+        std::cout << "Training with " << training_data.size() << " images for " 
+                  << label_to_name_map_.size() << " people" << std::endl;
 
-        // --- Train KNN Model --- 
-        knn_model_ = cv::ml::KNearest::create();
-        knn_model_->setDefaultK(knn_k_);
-        knn_model_->setIsClassifier(true);
-        knn_model_->train(training_data, cv::ml::ROW_SAMPLE, training_labels);
-        is_trained_ = knn_model_->isTrained();
-
-        if (!is_trained_) {
-             std::cerr << "Error: KNN model training failed." << std::endl;
-             return false;
-        }
-
-        // --- Save Model and Map --- 
-        knn_model_->save(model_save_path);
-        std::cout << "KNN model saved to: " << model_save_path << std::endl;
-
-        std::ofstream mapping_file(map_save_path);
-        if (!mapping_file.is_open()) {
-             throw std::runtime_error("Could not open label mapping file for writing: " + map_save_path);
-        }
-        for (const auto& pair : label_to_name_map_) {
-            mapping_file << pair.first << "," << pair.second << "\n";
-        }
-        mapping_file.close();
-        std::cout << "Label map saved to: " << map_save_path << std::endl;
-
-        std::cout << "KNN Training complete: " << images_processed << " images, " 
-                  << next_label << " people." << std::endl;
-        return true;
-        
-    } catch (const cv::Exception& cv_e) {
-        std::cerr << "OpenCV Error during training: " << cv_e.what() << std::endl;
-    } catch (const std::exception& e) {
-        std::cerr << "Standard Error during training: " << e.what() << std::endl;
-    }
-    return false; // Return false if any exception occurred
-}
-
-// Loads the KNN model and label map.
-bool FaceRecognizer::load(const std::string& model_load_path, 
-                          const std::string& map_load_path) {
-    is_trained_ = false;
-    knn_model_.release(); // Clear existing model
-    label_to_name_map_.clear();
-
-    try {
-        // Load KNN Model
-        if (fs::exists(model_load_path)) {
-             knn_model_ = cv::ml::KNearest::load(model_load_path);
-             if (!knn_model_ || !knn_model_->isTrained()) {
-                  std::cerr << "Warning: Could not load or invalid KNN model found at " << model_load_path << std::endl;
-                  knn_model_.release();
-             } else {
-                   std::cout << "Loaded existing KNN model from: " << model_load_path << std::endl;
-                   is_trained_ = true;
-             }
-        } else {
-             std::cout << "KNN model file not found: " << model_load_path << std::endl;
-        }
-
-        // Load Label Map
-        if (fs::exists(map_load_path)) {
-            std::ifstream mapping_file(map_load_path);
-            if (!mapping_file.is_open()) {
-                 std::cerr << "Warning: Could not open label mapping file: " << map_load_path << std::endl;
-            } else {
-                std::string line;
-                int count = 0;
-                while (std::getline(mapping_file, line)) {
-                    std::istringstream iss(line);
-                    std::string label_str, name;
-                    if (std::getline(iss, label_str, ',') && std::getline(iss, name)) {
-                        try {
-                             label_to_name_map_[std::stoi(label_str)] = name;
-                             count++;
-                        } catch (...) { // Catch potential stoi errors
-                              std::cerr << "Warning: Invalid format in mapping file line: " << line << std::endl;
-                        }
-                    }
-                }
-                mapping_file.close();
-                 if (count > 0) {
-                      std::cout << "Loaded map with " << count << " people from: " << map_load_path << std::endl;
-                 } else {
-                      std::cerr << "Warning: Label mapping file exists but is empty or invalid." << std::endl;
-                 }
+        // Verify data format
+        for (size_t i = 0; i < training_data.size(); i++) {
+            if (training_data[i].empty() || training_data[i].type() != CV_8U) {
+                std::cerr << "Invalid image format at index " << i << std::endl;
+                return false;
             }
-        } else {
-             std::cout << "Label map file not found: " << map_load_path << std::endl;
         }
-        
-        // Load is successful if the model loaded OR the map loaded (allows detection if model is present)
-        // Or perhaps better: require both for full functionality? Let's require model for now.
-        return is_trained_; 
 
-    } catch (const cv::Exception& e) {
-        std::cerr << "OpenCV Error loading model/map: " << e.what() << std::endl;
+        // Train the LBPH model
+        model_->train(training_data, labels);
+        is_trained_ = true;
+
+        // Save the model and label map
+        model_->write(model_path);
+        save_label_map(label_map_path);
+
+        std::cout << "Training completed successfully" << std::endl;
+        return true;
     } catch (const std::exception& e) {
-        std::cerr << "Standard Error loading model/map: " << e.what() << std::endl;
+        std::cerr << "Error during training: " << e.what() << std::endl;
+        return false;
     }
-    return false; // Return false on exception
 }
 
-// Predicts the name for a given face ROI.
-std::string FaceRecognizer::predict(const cv::Mat& face_roi) {
-    if (!is_ready()) {
-        // std::cerr << "Warning: Predict called but model is not ready." << std::endl;
+bool FaceRecognizer::load(const std::string& model_path, const std::string& label_map_path) {
+    try {
+        model_.release();
+        model_ = cv::face::LBPHFaceRecognizer::create();
+        
+        model_->read(model_path);
+        
+        if (!load_label_map(label_map_path)) {
+            std::cerr << "Failed to load label map from " << label_map_path << std::endl;
+            return false;
+        }
+        
+        is_trained_ = true;
+        return true;
+    } catch (const std::exception& e) {
+        std::cerr << "Error loading model: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+std::string FaceRecognizer::predict(const cv::Mat& face_region) const {
+    if (!is_trained_ || face_region.empty()) {
         return "Unknown";
     }
-    if (face_roi.empty()) {
-         return "Unknown";
-    }
 
     try {
-        // Preprocess ROI
-        cv::Mat resized_face_roi;
-        cv::resize(face_roi, resized_face_roi, training_img_size_);
-        cv::Mat flattened_face = resized_face_roi.reshape(1, 1);
-        flattened_face.convertTo(flattened_face, CV_32F);
-
-        // KNN Prediction
-        cv::Mat results, neighborResponses, dists;
-        float predicted_label_float = knn_model_->findNearest(flattened_face, knn_k_, results, neighborResponses, dists);
-        int predicted_label = static_cast<int>(predicted_label_float);
-
-        // Look up name
-        if (label_to_name_map_.count(predicted_label) > 0) {
-            return label_to_name_map_[predicted_label];
+        // Convert to grayscale if needed
+        cv::Mat gray_face;
+        if (face_region.channels() > 1) {
+            cv::cvtColor(face_region, gray_face, cv::COLOR_BGR2GRAY);
+        } else {
+            gray_face = face_region.clone();
         }
-    } catch (const cv::Exception& e) {
-         std::cerr << "OpenCV Error during prediction: " << e.what() << std::endl;
+
+        // Ensure 8-bit format
+        if (gray_face.type() != CV_8U) {
+            gray_face.convertTo(gray_face, CV_8U);
+        }
+
+        // Apply preprocessing to improve recognition
+        cv::Mat processed_face;
+        
+        // 1. Apply histogram equalization to normalize lighting
+        cv::equalizeHist(gray_face, processed_face);
+        
+        // 2. Apply slight Gaussian blur to reduce noise
+        cv::GaussianBlur(processed_face, processed_face, cv::Size(3, 3), 0);
+
+        // Resize to match training size
+        cv::Mat resized_face;
+        cv::resize(processed_face, resized_face, training_img_size_, 0, 0, cv::INTER_LINEAR);
+
+        // Predict using LBPH
+        int predicted_label = -1;
+        double confidence = 0.0;
+        model_->predict(resized_face, predicted_label, confidence);
+
+        // Adaptive confidence threshold based on number of people trained
+        // When more people are in the database, we need to be more strict
+        double base_threshold = 70.0;
+        const int num_people = label_to_name_map_.size();
+        double adaptive_threshold = base_threshold;
+        
+        if (num_people > 1) {
+            // Make threshold stricter with more people
+            adaptive_threshold = std::max(50.0, base_threshold - (num_people * 2.0));
+        }
+
+        std::cout << "Prediction confidence: " << confidence 
+                  << ", threshold: " << adaptive_threshold 
+                  << " (based on " << num_people << " people)" << std::endl;
+        
+        // Check confidence threshold - if confidence is too high, return Unknown
+        // For LBPH, lower confidence values are better (it measures distance)
+        if (confidence > adaptive_threshold) {
+            std::cout << "Face detected but confidence too low: " << confidence << std::endl;
+            return "Unknown";
+        }
+
+        // Find the name corresponding to the predicted label
+        for (const auto& pair : label_to_name_map_) {
+            if (pair.second == predicted_label) {
+                std::cout << "Recognized " << pair.first << " with confidence: " << confidence << std::endl;
+                return pair.first;
+            }
+        }
+
+        return "Unknown";
     } catch (const std::exception& e) {
-         std::cerr << "Standard Error during prediction: " << e.what() << std::endl;
+        std::cerr << "Error during prediction: " << e.what() << std::endl;
+        return "Unknown";
     }
-    
-    return "Unknown"; // Return Unknown if label not found or error occurred
 }
 
-// Checks if the model is loaded, trained, and ready for prediction.
 bool FaceRecognizer::is_ready() const {
-    // Model must be loaded and trained, and map should ideally be non-empty
-    return knn_model_ && is_trained_ && !label_to_name_map_.empty();
+    return model_ && is_trained_ && !label_to_name_map_.empty();
 }
 
-// Gets the current label-to-name map.
-const std::unordered_map<int, std::string>& FaceRecognizer::get_label_map() const {
-     return label_to_name_map_;
+const std::map<std::string, int>& FaceRecognizer::get_label_map() const {
+    return label_to_name_map_;
+}
+
+void FaceRecognizer::save_label_map(const std::string& path) const {
+    std::ofstream file(path);
+    if (!file.is_open()) {
+        throw std::runtime_error("Failed to open label map file for writing");
+    }
+
+    for (const auto& pair : label_to_name_map_) {
+        file << pair.first << " " << pair.second << "\n";
+    }
+}
+
+bool FaceRecognizer::load_label_map(const std::string& path) {
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        return false;
+    }
+
+    label_to_name_map_.clear();
+    std::string name;
+    int label;
+    while (file >> name >> label) {
+        label_to_name_map_[name] = label;
+    }
+
+    return !label_to_name_map_.empty();
 } 
