@@ -1,36 +1,40 @@
 cmake_minimum_required(VERSION 3.10)
-project(FaceRecognitionApp CXX)
+project(FaceRecognition)
 
 set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED True)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Find required packages
-find_package(OpenCV REQUIRED COMPONENTS core imgproc highgui objdetect dnn face videoio imgcodecs)
+find_package(OpenCV REQUIRED)
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(GTKMM REQUIRED gtkmm-4.0)
+pkg_check_modules(GTKMM REQUIRED gtkmm-3.0)
 
 # Include directories
-include_directories(
-    ${OpenCV_INCLUDE_DIRS}
-    ${GTKMM_INCLUDE_DIRS}
+include_directories(${OpenCV_INCLUDE_DIRS})
+include_directories(${GTKMM_INCLUDE_DIRS})
+include_directories(${CMAKE_SOURCE_DIR}/include)
+
+# Set output directories
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+# Add source files
+add_executable(FaceRecognitionGui
+    src/main_gui.cpp
+    src/FaceDetection.cpp
 )
 
 # Link libraries
-link_directories(${GTKMM_LIBRARY_DIRS})
-
-# Add the executable
-add_executable(FaceRecognitionGui src/main_gui.cpp) # We will create main_gui.cpp later
-
-# Link libraries to the executable
 target_link_libraries(FaceRecognitionGui
-    PRIVATE
     ${OpenCV_LIBS}
     ${GTKMM_LIBRARIES}
-    stdc++fs # For <filesystem>
+    opencv_face
 )
 
-# Ensure the executable is placed in the bin directory relative to build
-set_target_properties(FaceRecognitionGui PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+# Add compile definitions
+target_compile_definitions(FaceRecognitionGui PRIVATE
+    MODELS_FOLDER="${CMAKE_SOURCE_DIR}/models/"
+    DATA_FOLDER="${CMAKE_SOURCE_DIR}/data/"
+)
 
 # Print package info (optional, for debugging)
 message(STATUS "OpenCV Libraries: ${OpenCV_LIBS}")
