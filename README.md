@@ -140,14 +140,11 @@ This program uses the models and known faces from `data/faces/` to perform real-
 **Note:** Ensure you have the OpenCV development libraries installed (e.g., `opencv-devel` on Fedora/CentOS, `libopencv-dev` on Debian/Ubuntu).
 
 ```bash
-# Change to the project directory first
-cd face-recognition
-
-# Compile (if needed)
+# Compile (if needed, run from project root)
 # Adjust the -I path if OpenCV headers are installed elsewhere. Add -lstdc++fs if needed for <filesystem>.
 g++ src/FaceDetection.cpp -o bin/FaceDetectionLite -I/usr/include/opencv4 -lopencv_core -lopencv_imgproc -lopencv_highgui -lopencv_objdetect -lopencv_dnn -lopencv_face -lopencv_videoio -lopencv_imgcodecs -lstdc++fs
 
-# Run (ensure you are in the face-recognition directory)
+# Run (from project root)
 ./bin/FaceDetectionLite
 ```
 
