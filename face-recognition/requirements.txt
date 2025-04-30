@@ -1,0 +1,5 @@
+face-recognition==1.3.0
+numpy==1.26.3
+opencv-python==4.8.1.78
+PyGObject==3.46.0
+
