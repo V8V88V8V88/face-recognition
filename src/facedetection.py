@@ -4,7 +4,7 @@ import os
 import threading
 import queue
 
-faces_folder = 'faces'
+faces_folder = 'data/faces'
 face_recognition_threshold = 0.6
 
 known_face_encodings = []
