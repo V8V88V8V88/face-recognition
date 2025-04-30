@@ -142,7 +142,3 @@ The `src/facedetection.py` script provides standalone face detection capabilitie
 ## Contributing
 
 Contributions are welcome! Please follow standard fork-and-pull-request procedures.
-
-## License
-
-Specify your license here (e.g., MIT License).
