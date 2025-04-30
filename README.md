@@ -7,7 +7,7 @@ A C++ application using GTKmm and OpenCV for real-time face capture, training, a
 This project provides:
 1.  A graphical user interface (GUI) built with GTKmm to:
     *   Capture face images using a webcam.
-    *   Train a K-Nearest Neighbors (KNN) model based on captured faces.
+    *   Train a Local Binary Pattern Histograms (LBPH) model based on captured faces.
     *   Perform real-time face detection and recognition using the trained model and a Haar Cascade classifier.
 2.  A separate Python script (`src/facedetection.py`) for performing face detection tasks (details below).
 
@@ -20,7 +20,7 @@ face-recognition/
 │   └── faces/              # Stores captured face images (.jpg for C++ app)
 ├── models/                 # Required model files for C++ app
 │   ├── haarcascade_frontalface_alt2.xml # Face detection model
-│   ├── knn_model.yml       # Trained KNN recognition model (generated)
+│   ├── face_model.yml      # Trained LBPH recognition model (generated)
 │   └── label_mapping.txt   # Maps internal labels to names (generated)
 ├── src/                    # Source code
 │   ├── main_gui.cpp        # C++ Main application logic and GUI
@@ -113,7 +113,7 @@ face-recognition/
     *   Captured images are saved as grayscale JPGs in the `data/faces/` directory.
 2.  **Train:**
     *   Once you have captured images for one or more people, click the "Train Model" button.
-    *   This will process the images in `data/faces/` and create/update the `knn_model.yml` and `label_mapping.txt` files in the `models/` directory.
+    *   This will process the images in `data/faces/` and create/update the `face_model.yml` and `label_mapping.txt` files in the `models/` directory.
 3.  **Detect:**
     *   After training, click "Start Detection".
     *   The application will detect faces in the video feed and attempt to recognize them based on the trained model. Recognized faces will be shown with a green bounding box and name; unknown faces will have a red box.

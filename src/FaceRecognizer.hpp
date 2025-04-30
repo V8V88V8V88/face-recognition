@@ -1,12 +1,12 @@
-#ifndef FACE_RECOGNIZER_HPP
-#define FACE_RECOGNIZER_HPP
+#pragma once
 
 #include <opencv2/opencv.hpp>
-#include <opencv2/ml.hpp>
+#include <opencv2/face.hpp>
 #include <string>
 #include <vector>
-#include <unordered_map>
-#include <filesystem> // C++17 filesystem
+#include <map>
+#include <memory>
+#include <filesystem>
 
 namespace fs = std::filesystem;
 
@@ -14,35 +14,35 @@ class FaceRecognizer {
 public:
     FaceRecognizer();
 
-    // Trains the KNN model using images from the specified folder.
+    // Trains the face recognition model using images from the specified folder.
     // Returns true on success, false on failure.
-    bool train(const std::string& data_folder, 
-               const std::string& model_save_path, 
-               const std::string& map_save_path);
+    bool train(const std::string& data_folder, const std::string& model_path, const std::string& label_map_path);
 
-    // Loads the KNN model and label map from specified paths.
+    // Loads the model and label map from specified paths.
     // Returns true on success, false on failure.
-    bool load(const std::string& model_load_path, 
-              const std::string& map_load_path);
+    bool load(const std::string& model_path, const std::string& label_map_path);
 
     // Predicts the name for a given face ROI.
     // Takes a grayscale face region of interest.
     // Returns the predicted name ("Unknown" if not recognized or error).
-    std::string predict(const cv::Mat& face_roi);
+    std::string predict(const cv::Mat& face_roi) const;
 
     // Checks if the model is loaded, trained, and ready for prediction.
     bool is_ready() const;
 
     // Gets the current label-to-name map (e.g., for GUI checks).
-    const std::unordered_map<int, std::string>& get_label_map() const;
-
+    const std::map<std::string, int>& get_label_map() const;
 
 private:
-    cv::Ptr<cv::ml::KNearest> knn_model_;
-    std::unordered_map<int, std::string> label_to_name_map_;
-    bool is_trained_ = false; // Track training status explicitly
-    const cv::Size training_img_size_ = cv::Size(100, 100); // Standard size for training/prediction
-    const int knn_k_ = 3; // K value for KNN
-};
+    void save_label_map(const std::string& path) const;
+    bool load_label_map(const std::string& path);
 
-#endif // FACE_RECOGNIZER_HPP 
+    // --- Configuration ---
+    cv::Size training_img_size_{100, 100}; // Size images are resized to for training/prediction
+    // double confidence_threshold_ = 90.0; // Example LBPH confidence threshold (lower is better)
+
+    // --- Model Data ---
+    cv::Ptr<cv::face::LBPHFaceRecognizer> model_;
+    std::map<std::string, int> label_to_name_map_;
+    bool is_trained_ = false;
+}; 
