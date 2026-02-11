@@ -76,6 +76,9 @@ data/faces/*.jpg
 data/faces/*.png
 data/faces/*.jpeg
 !data/faces/.gitkeep
+data/credentials.csv
 models/*.caffemodel
 models/*.prototxt
+models/face_model.yml
+models/label_mapping.txt
 !models/.gitkeep 
